@@ -445,14 +445,14 @@ describe('Mnemon canonical workspace launcher', () => {
     expect(document.querySelector('[data-dsh-mnemon-view]')).toBeNull()
   })
 
-  it('keeps receiver-sensitive stores bound inside the canonical host and preserves workspace selection', async () => {
+  it.each(['workspace', 'workspaces'] as const)('keeps receiver-sensitive stores bound and preserves %s inspection selection', async storageScope => {
     const ctx = context()
     const sessions = receiverSensitiveStore(ctx.sessions.list.getSnapshot())
     const workspaces = receiverSensitiveStore(ctx.workspaces.list.getSnapshot())
     ctx.sessions.list = sessions
     ctx.workspaces.list = workspaces
     render(<MnemonWorkspaceHost
-      connection={ctx.connection as never} settingsScope={{ ...settings, getSnapshot: () => ({ ...settings.getSnapshot(), value: { storageScope: 'workspace' as const } }) }} sessions={ctx.sessions as never} workspaces={ctx.workspaces as never}
+      connection={ctx.connection as never} settingsScope={{ ...settings, getSnapshot: () => ({ ...settings.getSnapshot(), value: { storageScope } }) }} sessions={ctx.sessions as never} workspaces={ctx.workspaces as never}
       localeRuntime={ctx.locale as never} sourcePageDirectory={sourcePageDirectory} navigation={{ open() {}, close() {} }}
       t={t as never} renderSlot={() => null} sessionId="session-1"
     />)

@@ -8,13 +8,22 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { documentProtectionModel } from './fixtures/document-protection-model.mjs'
+import { documentArchiveModel } from './fixtures/document-archive-model.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const flags = new Set(process.argv.slice(2))
 let betterSidebarRoot
+let electronExecutable
 for (const flag of flags) {
   if (flag === '--strategy-extensions') continue
   if (flag === '--document-protection') continue
+  if (flag === '--document-archive') continue
+  if (flag.startsWith('--electron=')) {
+    const value = flag.slice('--electron='.length)
+    if (value === '') throw new Error('--electron requires an Electron executable')
+    electronExecutable = resolve(value)
+    continue
+  }
   if (flag.startsWith('--better-sidebar=')) {
     const value = flag.slice('--better-sidebar='.length)
     if (value === '') throw new Error('--better-sidebar requires a package directory')
@@ -33,12 +42,13 @@ const workspace = join(fixture, 'workspace')
 await Promise.all([dshHome, dataDir, workspace].map(path => mkdir(path)))
 let modelRequests = 0
 const protectionModel = flags.has('--document-protection') ? documentProtectionModel(event => console.log('Document protection: ' + JSON.stringify(event))) : undefined
+const scriptedModel = flags.has('--document-archive') ? documentArchiveModel(event => console.log('Document archive: ' + JSON.stringify(event))) : protectionModel
 const model = createServer(async (request, response) => {
   let input = ''
-  for await (const chunk of request) { if (protectionModel !== undefined) input += chunk }
+  for await (const chunk of request) { if (scriptedModel !== undefined) input += chunk }
   console.log('Fixture model request: ' + ++modelRequests)
   let reply
-  try { reply = protectionModel?.(JSON.parse(input)) ?? 'Isolated Mnemon WebUI test response.' }
+  try { reply = scriptedModel?.(JSON.parse(input)) ?? 'Isolated Mnemon WebUI test response.' }
   catch (error) {
     console.error(error)
     response.writeHead(500, { 'content-type': 'application/json' })
@@ -72,7 +82,13 @@ let web
 let stopping = false
 let restarting = false
 function launch() {
-  web = spawn(process.execPath, [dshBin, 'web', '--no-open', '--host', '127.0.0.1', '--port', '0'], { env, cwd: workspace, stdio: 'inherit' })
+  const args = [dshBin, 'web', '--no-open', '--host', '127.0.0.1', '--port', '0']
+  const hostEnv = { ...env }
+  if (electronExecutable !== undefined) {
+    for (const key of Object.keys(hostEnv)) if (key.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete hostEnv[key]
+    args.unshift('--expose-internals', join(root, 'scripts/fixtures/electron-dsh-host.cjs'))
+  }
+  web = spawn(electronExecutable ?? process.execPath, args, { env: hostEnv, cwd: workspace, stdio: 'inherit' })
   web.once('error', error => { console.error(error); process.exitCode = 1; void stop() })
   web.once('exit', code => { if (!stopping && !restarting) { if (code) process.exitCode = code; void stop() } })
 }
@@ -118,10 +134,10 @@ try {
   const preset = join(dshHome, '.agent-presets/mnemon-e2e')
   await mkdir(preset, { recursive: true })
   await writeFile(join(preset, 'preset.yml'), 'name: Mnemon E2E\ndescription: Isolated memory UI test (no Shell).\norder: 0\n')
-  await writeFile(join(preset, 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: You are testing the Mnemon memory UI.\n")
+  await writeFile(join(preset, 'agent.cordis.yml'), "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    prefix: You are testing the Mnemon memory UI.\n")
   // Leave the entire real WebUI/plugin stack enabled. Only unrelated native
   // PTY/search tools are disabled so a test cannot launch workspace commands.
-  const disabled = ['subprocess', 'bash-sandbox', 'pwsh-sandbox', 'tool-bash', 'tool-pwsh', 'permission', 'tool-fs-search', 'directory-picker']
+  const disabled = ['subprocess', 'open-in-app', 'bash-sandbox', 'pwsh-sandbox', 'tool-bash', 'tool-pwsh', 'permission', 'tool-fs-search', 'directory-picker']
   const browsePicker = `- id: agent-presets
   config:
     default: mnemon-e2e
