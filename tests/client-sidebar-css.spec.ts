@@ -28,6 +28,19 @@ describe('Sidebar layout invariants', () => {
     expect(workspaceCss).not.toContain('.dshDesktopConversationSurface')
   })
 
+  it('aligns the launcher label with the sibling plugin entries in the DSH sidebar', () => {
+    // The launcher row sits directly under the task-board and skill-explorer
+    // rows, which both use an 8px icon/label gap. A wider gap here pushed the
+    // label 2px right of its neighbours, so the three rows read as misaligned.
+    const entry = /\.entry \{[^}]*\}/.exec(workspaceCss)?.[0] ?? ''
+    expect(entry).toContain('gap: 8px;')
+    expect(entry).not.toMatch(/gap:\s*(?!8px)\d+px/)
+    // The icon box keeps the shared 24px/18px geometry the gap is measured against.
+    expect(workspaceCss).toContain('.entryIcon {')
+    expect(workspaceCss).toMatch(/\.entryIcon \{[^}]*width: 24px;[^}]*height: 24px;/)
+    expect(workspaceCss).toMatch(/\.entryIcon svg \{[^}]*width: 18px;[^}]*height: 18px;/)
+  })
+
   it('pins primary page headers at the canvas origin without an initial sticky settling distance', () => {
     expect(sidebarCss).toContain(".shell .canvas[data-lock-page-header] [class*='pageHeader'] {\n  position: sticky;\n  z-index: 12;\n  top: 0;")
     expect(sidebarCss).not.toContain("top: -14px")
