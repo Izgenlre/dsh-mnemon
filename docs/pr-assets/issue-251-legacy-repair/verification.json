@@ -51,6 +51,16 @@
       "path": "251-combined-after.jpg",
       "bytes": 40096,
       "sha256": "ac9e2f58e51d87ede85a117502a0c6c512ac8a48ab6118bea71b583d6efb79f6"
+    },
+    {
+      "path": "251-combined-cold-reopen.jpg",
+      "bytes": 45923,
+      "sha256": "b56cd813c105fd634725b5f22085d93ebb3456a4e089041096b90a7e48b9f603"
+    },
+    {
+      "path": "251-combined-cold-new-turn.jpg",
+      "bytes": 50060,
+      "sha256": "ce4b4beb4552830e5ddfdcdba0e028c9cebcbbff30b32a58c9646d3e1502be2c"
     }
   ],
   "limits": [
@@ -115,6 +125,24 @@
       "arguments": "{}",
       "result": "Synthetic tool response."
     },
-    "configuredLoopbackRouteSelected": "DeepSeek-V4-Flash"
+    "configuredLoopbackRouteSelected": "DeepSeek-V4-Flash",
+    "finalValidation": {
+      "baseRevision": "6ad99cc1890714355e1bb0e9230f3fce674bfb73",
+      "repairRevision": "e82735158ed763d3dcfd8d9052b678f6c96963e8",
+      "originalSha256": "94f7da957d213c896c4794603580c9e982670bcd725ecffeee241eab3ad709e5",
+      "repairedSha256": "07db52eaacf6d45fc2d4c0a2e8931604674ce332c3a0f823aeed4d4aacaeed3b",
+      "originalPreserved": true,
+      "repairedV0PreservedAfterMigration": true,
+      "migratedFormat": 3,
+      "physicalV3Rows": 43,
+      "historicalUserAndPluginMessagesPreservedApartFromThreeSummaryFields": 5,
+      "historicalAssistantMessagesPreserved": 2,
+      "durableToolCallAndResultPreserved": true,
+      "expandedStreamPreserved": true,
+      "newTurnContinued": true,
+      "coldReopenVerifiedInWebUI": true,
+      "externalModelCalls": 0,
+      "hostRestartSignal": "SIGUSR2"
+    }
   }
 }

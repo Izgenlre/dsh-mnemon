@@ -22,6 +22,12 @@
 |---|---|
 | ![组合旧历史被拒绝](./251-combined-before.jpg) | ![历史消息与展开的工具结果](./251-combined-after.jpg) |
 
+组合会话也通过真实 WebUI 完成 canary 续写。Host 经 `SIGUSR2` 重启后冷打开，历史消息、展开的工具结果与新对话均保留。物理 v3 日志包含 43 行；结构比较确认五条历史 user/plugin 消息仅删除三个 summary 字段，两条历史 assistant 消息、持久 tool/call 与 tool/result、展开后的 stream 均一致。原始及修复 v0 的 hash 均未改变，外部模型调用为零。
+
+| 冷打开后的历史消息和工具输出 | 冷打开后保留的 canary 对话 |
+|---|---|
+| ![Host 重启后的组合历史](./251-combined-cold-reopen.jpg) | ![Host 重启后的工具输出与续写对话](./251-combined-cold-new-turn.jpg) |
+
 共享 Starter 基线还启用了三个可选 Strategy 扩展，实际状态页显示已安装 Native CLI 0.2.8。一次性真实 CLI 的创建、写入、关键词召回与删除冒烟通过。[Native 状态截图](./baseline-native-status.jpg)。这些检查不表示此补丁修改了 Native 存储。
 
 ## 契约审计与修复边界

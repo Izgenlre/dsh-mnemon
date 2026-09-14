@@ -22,6 +22,12 @@ A second WebUI artifact uses the [combined fixture](../../../tests/fixtures/issu
 |---|---|
 | ![Combined legacy history refused](./251-combined-before.jpg) | ![Historical messages and expanded tool result](./251-combined-after.jpg) |
 
+A canary turn also completed through the combined Session's actual WebUI. Cold reopening after a `SIGUSR2` Host restart retained the historical messages, expanded tool result and new exchange. The physical v3 log contained 43 rows. Structural comparison retained all five historical user/plugin messages apart from the three removed summary fields, both historical assistant messages, the durable tool call/result and the expanded stream. The original and repaired v0 hashes remained unchanged; external model calls remained zero.
+
+| Historical messages and tool output after cold reopen | Canary exchange retained after cold reopen |
+|---|---|
+| ![Combined history after Host restart](./251-combined-cold-reopen.jpg) | ![Tool output and continued exchange after Host restart](./251-combined-cold-new-turn.jpg) |
+
 The shared Starter baseline also loaded all three optional strategy extensions and reported the installed Native CLI 0.2.8. A separate disposable real-CLI create/write/keyword-recall/forget smoke passed. [Native status screenshot](./baseline-native-status.jpg). These checks do not imply that this patch changes Native storage.
 
 ## Audited transformations and boundaries
