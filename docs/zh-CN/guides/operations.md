@@ -57,7 +57,7 @@ DSH rc.8 首次说明的可选 SQLite 不兼容性在 DSH 0.1.1-rc.2 中仍然�
 
 1. 停止所属 DSH 进程，单独备份完整会话存储根及全部 generation；Mnemon Pack 不包含这些会话。以 DSH 错误中的准确 `raw log` 路径为准，不扫描或改写其他会话。
 2. 安装修复后的 Mnemon，对**备份副本**执行下面的预览命令。`.jsonl.zstd` 使用 Node `22.19+` 或 `24+`；普通 `.jsonl` 也支持 Node 20。
-3. 将结果写入会话目录外的新路径，核对 `repairedMessages` 和 SHA-256 报告。工具只移除 Mnemon 的 `recall` / `instructions` 两个已知错误 summary 字符串；其余解压后的字节、消息 ID、事件顺序均保留。不处理其他插件或陌生 summary，并拒绝覆盖已有输出。
+3. 将结果写入会话目录外的新路径，核对 `repairedMessages`、`repairedDescriptors`、`expandedToolChunkRows`、`expandedToolChunks`、SHA-256 报告和 `blockers`。预览计数表示候选修改；发现已知不支持的形状时退出码为 1，副本请求返回 `mode: "refused"` 且不生成输出。已有输出文件会被拒绝。
 4. 先在一次性的 Profile 副本中，用修复副本替换对应 `session.jsonl` 或 `session.jsonl.zstd`，保留原始备份。让 DSH 加载、续写，重启后再验证会话。副本验证通过后，才在已停止的原 Profile 中执行同样的明确替换。命令本身绝不替换输入或正在使用的会话。
 
 ```sh
@@ -65,7 +65,16 @@ dsh-mnemon-repair-session --input /backup/session.jsonl.zstd
 dsh-mnemon-repair-session --input /backup/session.jsonl.zstd --output /backup/repaired-session.jsonl.zstd
 ```
 
-可执行命令随 `dsh-mnemon` 安装；Profile 内安装可在该目录使用 `pnpm exec dsh-mnemon-repair-session`。源码 checkout 使用 `node bin/repair-legacy-session.mjs`。工具只接受 v0、合法 UTF-8 JSON 记录和完整的普通 Zstandard 帧，原始与解压输入均限制为 128 MiB。格式损坏、不完整帧、消息路径中的歧义重复键会在发布输出前被拒绝。工具不会修复其他损坏，也不保证任意会话都能迁移；最终仍以 DSH 官方加载器校验为准。
+可执行命令随 `dsh-mnemon` 安装；Profile 内安装可在该目录使用 `pnpm exec dsh-mnemon-repair-session`。源码 checkout 使用 `node bin/repair-legacy-session.mjs`。副本修复仅覆盖经过契约审计的历史形状：
+
+| 历史形状 | 副本行为 |
+|---|---|
+| `dsh-mnemon` instructions summary 为 `Optional memory recall and remember reminder`；recall summary 为 `Memory View snapshot` 或 `Runtime memory snapshot` | 仅移除该 source 的 `summary` 成员，保留其他插件消息和陌生 summary。 |
+| 严格符合旧版封闭字段集合且组合参数满足冻结 v3 契约的 subagent descriptor v2 | 仅将版本值改为 3，保留 provider、成对模型字段、persona、label 和 toolFilter；不添加默认值或 reasoning effort。多余字段、不成对模型和其他不支持的版本会被拒绝。 |
+| 严格符合旧版结构、字符串 `id: ""` 或 `name: ""` 的 `tool-call-chunks` | 展开为原来的 raw delta 事件，保留 ID、name 是否存在、参数字符串、序号和时间戳。不丢弃 chunk，provenance 引用无需重编号。已经是 raw 的空字符串 delta 保持字节不变。 |
+| 流式 name 为 null，或完成 block、assistant 工具声明、tool/call、tool/result 中的 ID 为空 | 报告 blocker 并拒绝输出。缺失 ID 也可能被 provider 回放、hook 和外部 spill 制品引用；工具不生成替代身份。 |
+
+工具只接受 v0、合法 UTF-8 JSON 记录和完整的普通 Zstandard 帧；原始输入、解压输入和展开输出均限制为 128 MiB。格式损坏、不完整帧、修改路径中的歧义重复键、无法安全表示的 packed 序号或时间会在发布输出前被拒绝。仅改写匹配的 summary/version 成员和需要展开的 packed 行，其他解压字节均保留。诊断统计每类已知 blocker 的全部次数，并最多列出十个行号/事件/字段路径样例，不输出消息正文。`migrationValidated: false` 明确表示扫描器不会修复其他损坏，也不保证任意会话都能迁移；最终仍以安装的官方 DSH 加载器和 stream 回放为准。参见 [issue #251 契约审计与验证](../../pr-assets/issue-251-legacy-repair/README.zh-CN.md)。
 
 DSH 以写权限打开旧会话时，会迁移为不可变的 v3 generation。Mnemon Runtime、档案与记忆空间维持原有格式。回滚 DSH 时，在独立旧版本 Profile 中恢复升级前会话备份；不要让旧 DSH 打开 v3 generation。参见[验证与截图](../../pr-assets/issue-223-dsh-015/README.zh-CN.md)。
 

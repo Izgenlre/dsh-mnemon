@@ -1,0 +1,82 @@
+{
+  "date": "2026-09-14",
+  "baseline": "6ad99cc1890714355e1bb0e9230f3fce674bfb73",
+  "dsh": "0.1.5-rc.1",
+  "node": "25.1.0",
+  "pnpm": "11.19.0",
+  "platform": "macOS arm64",
+  "nativeCli": "0.2.8",
+  "webui": {
+    "fixture": "tests/fixtures/issue-251-legacy-v0.jsonl",
+    "beforeOldCliRepairs": 2,
+    "afterCliRepairs": 3,
+    "beforeError": "user/message 7 source summary requires notice form",
+    "historyRestored": true,
+    "resumedThroughActualWebUI": true,
+    "hostRestartedAndColdReopened": true,
+    "loopbackModelOnly": true,
+    "originalSha256": "415d0a9470f9eb7301bcd02333d8be428b29082fe7b0ae74e43da43336022d3e",
+    "repairedSha256": "2e69362ea5284683b933ef6b8f2e480486a723930a0fa262b657b80c63fa87e0"
+  },
+  "native": {
+    "realCliCreateWriteRecallForget": true,
+    "optionalStrategies": [
+      "scoped",
+      "light-context",
+      "auto-capture"
+    ]
+  },
+  "screenshots": [
+    {
+      "path": "251-before-runtime-summary.jpg",
+      "bytes": 44155,
+      "sha256": "3d1cde0ad35ae361ce3082d1b6a11378b110c2e94982fd2d7fd43b60d49d1ac1"
+    },
+    {
+      "path": "251-after-cold-reopen.jpg",
+      "bytes": 48254,
+      "sha256": "7f4bf72465a6f5ccfb436d45071af0bde3388bf093dfd1f60ef21f37395115e2"
+    },
+    {
+      "path": "baseline-native-status.jpg",
+      "bytes": 62005,
+      "sha256": "77c67c5bcf180d3ae483e2ab49f718f8870a582ef2f168958ded6332d1d7ae93"
+    }
+  ],
+  "limits": [
+    "WebUI screenshots cover Runtime summary recovery; descriptor and packed delta cases use actual released loader and replay tests.",
+    "Null names and empty durable tool identities are explicitly refused; not all issue251 variants are claimed repaired.",
+    "Frozen v0 migration rc.1 and rc.2 artifacts are byte-identical; full execution used rc.1.",
+    "No production Sessions, external model APIs, Windows source build or live third-party Provider was tested."
+  ],
+  "validation": {
+    "fullVerifyPassed": true,
+    "finalDiagnosticAdjustmentRechecked": [
+      "typecheck",
+      "test:root",
+      "verify:package"
+    ],
+    "rootPassed": 1028,
+    "rootSkipped": 5,
+    "pluginPassed": 323,
+    "pluginSkipped": 2,
+    "totalPassed": 1351,
+    "totalSkipped": 7,
+    "repairPassed": 66,
+    "headlessTotalTools": 39,
+    "headlessRepresentativeMnemonTools": 8,
+    "deterministicBuildFiles": 39,
+    "packageFiles": 47,
+    "packedBytes": 287106,
+    "unpackedBytes": 1288712,
+    "maximumUnpackedBytes": 1292000,
+    "publicNodeEntries": 12,
+    "publicTypeDependencies": 27,
+    "executableHelpEntries": 1,
+    "independentAudit": {
+      "descriptorCombinations": 144,
+      "packedBigIntBoundaryCases": 125,
+      "remainingFindings": 0
+    }
+  }
+}

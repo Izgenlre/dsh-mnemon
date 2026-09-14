@@ -57,7 +57,7 @@ The separate error `source summary requires notice form; source v0 artifact rema
 
 1. Stop the owning DSH process. Back up its entire Session storage root, including every generation, separately from a Mnemon Pack. Use the exact `raw log` path reported by DSH; do not search or rewrite unrelated sessions.
 2. With the updated Mnemon package installed, preview the command below against a **backup copy**. Use Node `22.19+` or `24+` for `.jsonl.zstd`; plain `.jsonl` also works on Node 20.
-3. Write to a new path outside the Session directory. Review `repairedMessages` and the SHA-256 report. Only the two known Mnemon `recall` / `instructions` summary strings are removed; all other decoded bytes, message IDs and event order are retained. Other plugins and unfamiliar summaries are untouched. Existing output files are rejected.
+3. Write to a new path outside the Session directory. Review `repairedMessages`, `repairedDescriptors`, `expandedToolChunkRows`, `expandedToolChunks`, the SHA-256 report and `blockers`. Preview counts describe candidate changes. Known unsupported shapes cause exit status 1; a requested copy has `mode: "refused"` and no output is published. Existing output files are rejected.
 4. In a disposable copy of the Profile, replace only the affected `session.jsonl` or `session.jsonl.zstd` with the repaired copy, retaining the original backup. Let DSH load and resume it, then restart and verify the conversation. Repeat that explicit replacement in the stopped original Profile only after validating the copy. The command itself never replaces the input or a live Session.
 
 ```sh
@@ -65,7 +65,16 @@ dsh-mnemon-repair-session --input /backup/session.jsonl.zstd
 dsh-mnemon-repair-session --input /backup/session.jsonl.zstd --output /backup/repaired-session.jsonl.zstd
 ```
 
-The executable is installed with `dsh-mnemon`; a Profile-local installation can use `pnpm exec dsh-mnemon-repair-session` from that Profile. In a checkout use `node bin/repair-legacy-session.mjs`. The tool accepts only v0, valid UTF-8 JSON records and complete ordinary Zstandard frames, with a 128 MiB limit on both stored and decoded input. Malformed input, incomplete frames and ambiguous duplicate message-path keys are refused without publishing output. It does not recover unrelated corruption or assert that every possible Session is migratable; the official DSH loader remains the validator.
+The executable is installed with `dsh-mnemon`; a Profile-local installation can use `pnpm exec dsh-mnemon-repair-session` from that Profile. In a checkout use `node bin/repair-legacy-session.mjs`. The copy repair supports these audited historical shapes:
+
+| Historical shape | Copy behavior |
+|---|---|
+| `dsh-mnemon` instructions summary `Optional memory recall and remember reminder`; recall summary `Memory View snapshot` or `Runtime memory snapshot` | Remove only that source's `summary` member. Other plugin messages and unfamiliar summaries remain untouched. |
+| Exact historical subagent descriptor v2 with a composition accepted by the frozen v3 contract | Change only its version value to 3. Keep provider, model pair, persona, label and tool filters intact; add no defaults or reasoning effort. Extra fields, unpaired models and unsupported versions are refused. |
+| Exact packed `tool-call-chunks` with string `id: ""` or `name: ""` | Expand to the original raw delta events, preserving IDs, name presence, argument strings, sequence numbers and timestamps. No chunk is dropped and provenance references need no renumbering. Already raw empty-string deltas remain byte-identical. |
+| Null streaming names or empty IDs in completed blocks, assistant advertisements, tool calls or results | Report blockers and refuse output. Missing identities can also be referenced by provider replay, hooks and external spill artifacts; the tool does not manufacture replacements. |
+
+The tool accepts only v0, valid UTF-8 JSON records and complete ordinary Zstandard frames, with a 128 MiB limit on stored input, decoded input and expanded output. Malformed input, incomplete frames, ambiguous duplicate keys on transformed paths, and unsafe packed coordinates are refused without publishing output. Only the changed summary/version members and expanded packed rows are rewritten; every other decoded byte is retained. Diagnostics count every known blocker and include at most ten line/event/path samples per class, without message bodies. `migrationValidated: false` is deliberate: this scanner does not recover unrelated corruption or guarantee that every Session can migrate. The installed official DSH loader and stream replay remain the final checks. See the [issue #251 contract audit and verification](../../pr-assets/issue-251-legacy-repair/README.md).
 
 DSH migrates old Sessions to immutable v3 generations when opening for write. Mnemon Runtime, Documents and Memory Spaces retain their existing formats. To roll DSH back, restore the pre-upgrade Session backup in a separate old-version Profile; do not open v3 generations with an older DSH. See [verification and screenshots](../../pr-assets/issue-223-dsh-015/README.md).
 

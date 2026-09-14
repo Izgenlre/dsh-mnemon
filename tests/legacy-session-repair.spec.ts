@@ -6,10 +6,15 @@ import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { Context } from '@deepseek-ai/cordis'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { assertReleasedEventPayload } from '@deepseek-ai/dsh-session-format-v0-to-v1'
+import { expandAssistantStream } from '@deepseek-ai/dsh-llm'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const command = resolve('bin/repair-legacy-session.mjs')
 const fixture = await readFile(new URL('./fixtures/issue-223-legacy-v0.jsonl', import.meta.url), 'utf8')
+const runtimeFixture = await readFile(new URL('./fixtures/issue-251-legacy-v0.jsonl', import.meta.url), 'utf8')
+const toolsFixture = await readFile(new URL('./fixtures/issue-251-valid-tools-v0.jsonl', import.meta.url), 'utf8')
+const combinedFixture = await readFile(new URL('./fixtures/issue-251-repairable-v0.jsonl', import.meta.url), 'utf8')
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function directory() {
@@ -30,8 +35,349 @@ function decompressFrames(data: Buffer) {
   return Buffer.concat(chunks).toString()
 }
 const expected = fixture.replace(',"summary":"Optional memory recall and remember reminder"', '').replace(',"summary":"Memory View snapshot"', '')
+const runtimeExpected = runtimeFixture.replace(',"summary":"Optional memory recall and remember reminder"', '').replace(',"summary":"Memory View snapshot"', '').replace(',"summary":"Runtime memory snapshot"', '')
+const descriptorFixture = (data: object) => runtimeExpected + JSON.stringify({ type: 'subagent/descriptor', seq: 17, time: 1789030660071, data }) + '\n'
+const descriptorV2 = { version: 2, mode: 'continuable', provider: 'in-process', label: 'Synthetic child', agentProvider: 'fixture', agentModel: 'fixture', persona: 'synthetic', toolFilter: { allow: ['synthetic_lookup'], deny: [] } }
+
+function toolStreamFixture(packed: boolean, id: string, name?: string | null) {
+  const rows = toolsFixture.trim().split('\n').map(line => JSON.parse(line))
+  const first = rows[3]
+  const args = ['', '{', '}']
+  const dt = [0, 2]
+  const deltas = args.map((argumentsDelta, index) => ({ type: 'assistant/chunk', seq: first.seq + index, time: first.time + (index === 2 ? 2 : 0),
+    data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id, ...(name === undefined ? {} : { name }), argumentsDelta } } }))
+  const replacement = packed ? [{ type: 'tool-call-chunks', seq0: first.seq, time0: first.time,
+    data: { turn: 1, step: 1, index: 0, id, ...(name === undefined ? {} : { name }), dt, args } }] : deltas
+  for (const row of rows.slice(4)) {
+    row.seq += 2
+    row.time += 2
+    if (row.type === 'assistant/message') row.sourceEventSeqs = [[2, 5]]
+  }
+  return [...rows.slice(0, 3), ...replacement, ...rows.slice(4)].map(row => JSON.stringify(row)).join('\n') + '\n'
+}
+
+function replayStream(restored: Awaited<ReturnType<typeof publishedLoad>>) {
+  const assistant = restored.events.find(event => event.type === 'assistant/message')!
+  const stream = (assistant.data as { stream: Parameters<typeof expandAssistantStream>[0] }).stream
+  return [...expandAssistantStream(stream)]
+}
+
+async function publishedLoad(root: string, text: string, mode: 'read' | 'write' = 'read') {
+  const { id, cwd }: { id: string; cwd: string } = JSON.parse(text.split('\n')[0]!)
+  const sessionDir = join(root, `--${cwd.slice(1).replaceAll('/', '-')}--`, id)
+  await mkdir(sessionDir, { recursive: true })
+  await writeFile(join(sessionDir, 'session.jsonl'), text)
+  const ctx = new Context()
+  await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+  try {
+    const handle = await ctx.sessionPersistence.open(SessionId(id), mode)
+    try { return await handle.read() } finally { await handle.close() }
+  } finally { await ctx.fiber.dispose() }
+}
 
 describe('legacy Session copy repair', () => {
+  it.each(['none', 'zstd'] as const)('repairs all supported shapes together without changing another plugin (%s)', async compression => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    const before = compression === 'none' ? Buffer.from(combinedFixture) : compressFrames(combinedFixture)
+    await writeFile(input, before)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ repairedMessages: 3, repairedDescriptors: 1, expandedToolChunkRows: 1, expandedToolChunks: 3, blockers: [] })
+    const after = await readFile(output)
+    const text = compression === 'none' ? after.toString() : decompressFrames(after)
+    const migrated = await publishedLoad(join(root, 'load'), text, 'write')
+    const originalOther = combinedFixture.split('\n').find(line => line.includes('synthetic-other-memory-source'))!
+    expect(text.split('\n')).toContain(originalOther)
+    expect(migrated.events.filter(event => event.type === 'tool/call')).toHaveLength(1)
+    const descriptor = migrated.events.find(event => event.type === 'subagent/descriptor')!
+    expect(descriptor.data).toMatchObject({ version: 3, label: 'Synthetic historical child descriptor' })
+    expect(await readFile(input)).toEqual(before)
+    const repeated = cli('--input', output, '--output', join(root, 'idempotent'))
+    expect(repeated.status).toBe(0)
+    expect(await readFile(join(root, 'idempotent'))).toEqual(after)
+  })
+
+  it.each([
+    { id: '', name: undefined },
+    { id: '', name: '' },
+    { id: 'call-251', name: '' },
+  ].flatMap(value => (['none', 'zstd'] as const).map(compression => ({ ...value, compression }))))('losslessly unpacks string placeholders for actual migration and stream replay (%#)', async ({ id, name, compression }) => {
+    const root = await directory()
+    const text = toolStreamFixture(true, id, name)
+    const raw = toolStreamFixture(false, id, name)
+    if (id === '') await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow('id and optional name must be strings')
+    else {
+      const loaded = await publishedLoad(join(root, 'before'), text)
+      expect(() => replayStream(loaded)).toThrow('name must be a non-empty string')
+    }
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    const before = compression === 'none' ? Buffer.from(text) : compressFrames(text)
+    await writeFile(input, before)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ repairedMessages: 0, expandedToolChunkRows: 1, expandedToolChunks: 3, blockers: [] })
+    const after = await readFile(output)
+    const unpacked = compression === 'none' ? after.toString() : decompressFrames(after)
+    expect(unpacked).toBe(raw)
+    expect(await readFile(input)).toEqual(before)
+    const migrated = await publishedLoad(join(root, 'after'), unpacked, 'write')
+    const replay = replayStream(migrated)
+    const originalChunks = raw.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.type === 'assistant/chunk').map(row => ({ time: row.time, chunk: row.data.chunk }))
+    expect(replay).toEqual(originalChunks)
+    expect(replayStream(await publishedLoad(join(root, 'after'), unpacked))).toEqual(originalChunks)
+    expect(JSON.parse(cli('--input', output).stdout)).toMatchObject({ expandedToolChunkRows: 0, expandedToolChunks: 0, inputSha256: JSON.parse(result.stdout).outputSha256 })
+  })
+
+  it('leaves raw empty-string placeholders and valid tool chains byte-identical', async () => {
+    const root = await directory()
+    for (const [index, text] of [toolsFixture, toolStreamFixture(false, ''), toolStreamFixture(false, '', ''), toolStreamFixture(false, 'call-251', '')].entries()) {
+      const input = join(root, `input-${index}`)
+      const output = join(root, `output-${index}`)
+      await writeFile(input, text)
+      const result = cli('--input', input, '--output', output)
+      expect(result.status).toBe(0)
+      expect(JSON.parse(result.stdout)).toMatchObject({ repairedMessages: 0, repairedDescriptors: 0, expandedToolChunkRows: 0, blockers: [] })
+      expect(await readFile(output, 'utf8')).toBe(text)
+      const loaded = await publishedLoad(join(root, `load-${index}`), text)
+      expect(replayStream(loaded)).toHaveLength(index === 0 ? 2 : 4)
+    }
+  })
+
+  it.each([false, true])('refuses null streaming names without dropping or changing deltas (packed=%s)', async packed => {
+    const root = await directory()
+    const text = toolStreamFixture(packed, 'call-251', null)
+    const input = join(root, 'input')
+    await writeFile(input, text)
+    await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow(packed ? 'id and optional name must be strings' : 'tool-call-delta name must be a string')
+    const result = cli('--input', input, '--output', join(root, 'output'))
+    expect(result.status).toBe(1)
+    expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'refused', blockers: [{ code: 'null-stream-tool-name', occurrences: packed ? 1 : 3 }] })
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['before', 'input'])
+  })
+
+  it.each([false, true])('refuses empty durable tool identities, including ambiguous advertisements (%s)', async ambiguous => {
+    const root = await directory()
+    let text = toolsFixture.replaceAll('"call-251"', '""')
+    if (ambiguous) {
+      const rows = text.trim().split('\n').map(line => JSON.parse(line))
+      rows.find(row => row.type === 'assistant/message').data.message.content.push({ type: 'tool-call', id: '', name: 'other_lookup', arguments: '{}' })
+      text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+    }
+    const input = join(root, 'input')
+    await writeFile(input, text)
+    await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow('id must be a non-empty string')
+    const result = cli('--input', input, '--output', join(root, 'output'))
+    expect(result.status).toBe(1)
+    const report = JSON.parse(result.stdout)
+    expect(report).toMatchObject({ mode: 'refused', outputSha256: null, blockers: [{ code: 'empty-durable-tool-id', occurrences: ambiguous ? 6 : 5 }] })
+    expect(report.blockers[0].samples.map((sample: { path: string }) => sample.path)).toContain('data.message.source.callId')
+    expect(report.blockers[0].samples.map((sample: { path: string }) => sample.path)).toContain('data.message.content[0].toolCallId')
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['before', 'input'])
+  })
+
+  it.each(['assistant/message', 'tool/result'])('also diagnoses empty identities in historical unwrapped %s', async type => {
+    const root = await directory()
+    const rows = toolsFixture.trim().split('\n').map(line => JSON.parse(line))
+    const row = rows.find(row => row.type === type)
+    row.data = type === 'assistant/message'
+      ? { turn: 1, step: 1, content: row.data.message.content, provenance: { provider: 'fixture', model: 'fixture' } }
+      : { turn: 1, step: 1, callId: 'call-251', content: row.data.message.content[0].content, isError: false }
+    const valid = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+    await expect(publishedLoad(join(root, 'valid'), valid)).resolves.toBeDefined()
+    const input = join(root, 'input')
+    await writeFile(input, valid)
+    const clean = cli('--input', input, '--output', join(root, 'valid-copy'))
+    expect(clean.status).toBe(0)
+    expect(await readFile(join(root, 'valid-copy'), 'utf8')).toBe(valid)
+    if (type === 'assistant/message') row.data.content[0].id = ''
+    else row.data.callId = ''
+    const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+    await expect(publishedLoad(join(root, 'invalid'), text)).rejects.toThrow('must be a non-empty string')
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', join(root, 'output'))
+    expect(result.status).toBe(1)
+    expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'refused', blockers: [{ code: 'empty-durable-tool-id', occurrences: 1,
+      samples: [{ path: type === 'assistant/message' ? 'data.content[0].id' : 'data.callId' }] }] })
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['input', 'invalid', 'valid', 'valid-copy'])
+  })
+
+  it.each([
+    (row: any) => { row.extra = true },
+    (row: any) => { row.data.extra = true },
+    (row: any) => { row.seq0 = Number.MAX_SAFE_INTEGER },
+    (row: any) => { row.seq0 = Number.MAX_SAFE_INTEGER; row.data.args = ['', '']; row.data.dt = [0] },
+    (row: any) => { row.time0 = Number.MAX_SAFE_INTEGER },
+    (row: any) => { row.data.dt = [0] },
+    (row: any) => { row.data.dt = [0, 0.5] },
+    (row: any) => { row.data.args = [] },
+    (row: any) => { row.data.args[0] = {} },
+    (row: any) => { row.data.index = -1 },
+  ])('refuses packed expansion when fields or coordinates would lose information (%#)', async mutate => {
+    const root = await directory()
+    const rows = toolStreamFixture(true, '').trim().split('\n').map(line => JSON.parse(line))
+    mutate(rows.find(row => row.type === 'tool-call-chunks'))
+    const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+    const input = join(root, 'input')
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', join(root, 'output'))
+    expect(result.status).toBe(1)
+    expect(JSON.parse(result.stdout)).toMatchObject({ expandedToolChunkRows: 0, blockers: [{ code: 'unsupported-packed-tool-chunks' }] })
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['input'])
+  })
+
+  it('rejects duplicate packed fields and bounds expanded output before publication', async () => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, toolStreamFixture(true, '').replace('"id":"","dt"', '"id":"other","id":"","dt"'))
+    const duplicate = cli('--input', input, '--output', output)
+    expect(duplicate.status).toBe(1)
+    expect(duplicate.stderr).toContain('Duplicate JSON property')
+    const rows = toolStreamFixture(true, '').trim().split('\n').map(line => JSON.parse(line))
+    const packed = rows.find(row => row.type === 'tool-call-chunks')
+    packed.data.args = Array(1_000_000).fill('')
+    packed.data.dt = Array(999_999).fill(0)
+    await writeFile(input, rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    const oversized = cli('--input', input, '--output', output)
+    expect(oversized.status).toBe(1)
+    expect(oversized.stderr).toContain('Expanded Session exceeds the 128 MiB repair limit')
+    expect(await readdir(root)).toEqual(['input'])
+  })
+
+  it('refuses negative zero packed coordinates without normalizing their identity', async () => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const text = toolStreamFixture(true, '').replace('"seq0":2', '"seq0":-0')
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', join(root, 'output'))
+    expect(result.status).toBe(1)
+    expect(JSON.parse(result.stdout).blockers[0].code).toBe('unsupported-packed-tool-chunks')
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['input'])
+  })
+
+  it('reports all known blocker classes with bounded location samples and publishes no partial repair', async () => {
+    const root = await directory()
+    const rows = descriptorFixture({ ...descriptorV2, extra: true }).replace(runtimeExpected, runtimeFixture).trim().split('\n').map(line => JSON.parse(line))
+    for (let index = 0; index < 15; index++) rows.push({ type: 'assistant/chunk', seq: 18 + index, time: 1789030660071,
+      data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: '', name: null, argumentsDelta: 'private fixture payload' } } })
+    rows.find(row => row.type === 'assistant/chunk' && row.data.chunk.name === null).seq = { malformed: 'private fixture payload' }
+    rows.push({ type: 'tool/call', seq: 33, time: 1789030660071, data: { turn: 1, step: 1, callId: '', name: 'synthetic_lookup', arguments: '{}' } })
+    const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+    const input = join(root, 'input')
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', join(root, 'output'))
+    expect(result.status).toBe(1)
+    const report = JSON.parse(result.stdout)
+    expect(report.mode).toBe('refused')
+    expect(report.repairedMessages).toBe(3)
+    expect(report.blockers.map((issue: { code: string; occurrences: number }) => [issue.code, issue.occurrences])).toEqual([
+      ['unsupported-subagent-descriptor', 1], ['null-stream-tool-name', 15], ['empty-durable-tool-id', 1],
+    ])
+    expect(report.blockers[1].samples).toHaveLength(10)
+    expect(result.stdout).not.toContain('private fixture payload')
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['input'])
+  })
+
+  it.each([
+    { version: 2, mode: 'one-shot', provider: 'in-process' },
+    { version: 2, mode: 'one-shot', provider: 'in-process', label: '' },
+    { version: 2, mode: 'continuable', provider: 'in-process', label: 'Synthetic child' },
+    descriptorV2,
+  ])('promotes only the equivalent declared v2 descriptor composition (%#)', async descriptor => {
+    const root = await directory()
+    const text = descriptorFixture(descriptor)
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow('uses unsupported descriptor version 2')
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ repairedMessages: 0, repairedDescriptors: 1, blockers: [] })
+    const after = await readFile(output, 'utf8')
+    expect(after).toBe(text.replace('"version":2', '"version":3'))
+    expect(await readFile(input, 'utf8')).toBe(text)
+    const migrated = await publishedLoad(join(root, 'after'), after, 'write')
+    const restored = migrated.events.find(event => event.type === 'subagent/descriptor')!
+    expect(restored.data).toEqual({ ...descriptor, version: 3 })
+    expect(() => assertReleasedEventPayload(JSON.parse(JSON.stringify(restored)), 0)).not.toThrow()
+    expect(JSON.parse(cli('--input', output).stdout)).toMatchObject({ repairedDescriptors: 0, inputSha256: JSON.parse(result.stdout).outputSha256 })
+  })
+
+  it.each([
+    { ...descriptorV2, version: 1 },
+    { ...descriptorV2, agentReasoningEffort: 'high' },
+    { ...descriptorV2, extra: true },
+    { ...descriptorV2, provider: '' },
+    { ...descriptorV2, label: '' },
+    { ...descriptorV2, agentProvider: '' },
+    { ...descriptorV2, agentModel: undefined },
+    { ...descriptorV2, persona: '' },
+    { ...descriptorV2, toolFilter: {} },
+    { ...descriptorV2, toolFilter: { allow: [''] } },
+    { ...descriptorV2, toolFilter: { deny: [], extra: [] } },
+    { version: 2, mode: 'one-shot', provider: 'in-process', persona: 'synthetic' },
+  ])('diagnoses unsupported descriptor composition and refuses a copy (%#)', async descriptor => {
+    const root = await directory()
+    const text = descriptorFixture(descriptor)
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    const preview = cli('--input', input)
+    expect(preview.status).toBe(1)
+    expect(JSON.parse(preview.stdout)).toMatchObject({ mode: 'preview', migrationValidated: false, outputSha256: null, repairedDescriptors: 0,
+      blockers: [{ code: 'unsupported-subagent-descriptor', occurrences: 1, samples: [{ line: 19, type: 'subagent/descriptor', seq: 17, path: 'data.version' }] }] })
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(1)
+    expect(JSON.parse(result.stdout).mode).toBe('refused')
+    expect(result.stderr).toContain('no output written')
+    expect(await readdir(root)).toEqual(['input'])
+    expect(await readFile(input, 'utf8')).toBe(text)
+  })
+
+  it('refuses duplicate keys along the descriptor and nested toolFilter paths', async () => {
+    const root = await directory()
+    for (const text of [
+      descriptorFixture(descriptorV2).replace('"version":2', '"version":1,"version":2'),
+      descriptorFixture(descriptorV2).replace('"allow":["synthetic_lookup"]', '"allow":["other"],"allow":["synthetic_lookup"]'),
+    ]) {
+      const input = join(root, 'input')
+      await writeFile(input, text)
+      const result = cli('--input', input, '--output', join(root, 'output'))
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('Duplicate JSON property')
+      expect(await readdir(root)).toEqual(['input'])
+      expect(await readFile(input, 'utf8')).toBe(text)
+    }
+  })
+
+  it.each(['none', 'zstd'] as const)('repairs all three historical Mnemon summaries and retains another plugin (%s)', async compression => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    const before = compression === 'none' ? Buffer.from(runtimeFixture) : compressFrames(runtimeFixture)
+    await writeFile(input, before)
+    const preview = cli('--input', input)
+    expect(preview.status).toBe(0)
+    expect(JSON.parse(preview.stdout)).toMatchObject({ mode: 'preview', repairedMessages: 3 })
+    expect(await readdir(root)).toEqual(['input'])
+    expect(cli('--input', input, '--output', output).status).toBe(0)
+    const after = await readFile(output)
+    expect(compression === 'none' ? after.toString() : decompressFrames(after)).toBe(runtimeExpected)
+    expect(await readFile(input)).toEqual(before)
+    const repeated = cli('--input', output, '--output', join(root, 'idempotent'))
+    expect(repeated.status).toBe(0)
+    expect(JSON.parse(repeated.stdout).repairedMessages).toBe(0)
+    expect(await readFile(join(root, 'idempotent'))).toEqual(after)
+  })
   it('previews and exclusively writes the two known repairs without changing the original', async () => {
     const root = await directory()
     const input = join(root, 'session.jsonl')
@@ -153,10 +499,14 @@ describe('legacy Session copy repair', () => {
     for (const args of [[], ['--input'], ['--wat', 'file'], ['--input', 'file', '--input', 'file']]) expect(cli(...args).status).toBe(1)
   })
 
-  it.each(['none', 'zstd'] as const)('unblocks the real published DSH v0 → v3 migration and cold reopen (%s)', async compression => {
+  it.each([
+    { name: 'original Mnemon summaries', fixture, expected },
+    { name: 'runtime summary and independent plugin', fixture: runtimeFixture, expected: runtimeExpected },
+  ].flatMap(value => (['none', 'zstd'] as const).map(compression => ({ ...value, compression }))))('unblocks the real published DSH v0 → v3 migration and cold reopen ($name, $compression)', async ({ fixture, expected, compression }) => {
     const root = await directory()
+    const { id, cwd }: { id: string; cwd: string } = JSON.parse(fixture.split('\n')[0]!)
     const suffix = compression === 'none' ? '.jsonl' : '.jsonl.zstd'
-    const sessionDir = join(root, '--tmp-mnemon-issue-223-synthetic--', 'issue-223-legacy')
+    const sessionDir = join(root, `--${cwd.slice(1).replaceAll('/', '-')}--`, id)
     await mkdir(sessionDir, { recursive: true })
     const original = join(sessionDir, `session${suffix}`)
     const before = compression === 'none' ? Buffer.from(fixture) : compressFrames(fixture)
@@ -168,7 +518,7 @@ describe('legacy Session copy repair', () => {
     }
     let ctx = await backend()
     try {
-      await expect(ctx.sessionPersistence.open(SessionId('issue-223-legacy'), 'read')).rejects.toThrow('source summary requires notice form')
+      await expect(ctx.sessionPersistence.open(SessionId(id), 'read')).rejects.toThrow('source summary requires notice form')
     } finally { await ctx.fiber.dispose() }
     const copy = join(root, `repaired${suffix}`)
     expect(cli('--input', original, '--output', copy).status).toBe(0)
@@ -180,7 +530,7 @@ describe('legacy Session copy repair', () => {
     const repairedV0 = await readFile(original)
     ctx = await backend()
     try {
-      const handle = await ctx.sessionPersistence.open(SessionId('issue-223-legacy'), 'write')
+      const handle = await ctx.sessionPersistence.open(SessionId(id), 'write')
       const restored = await handle.read()
       expect(restored.events.filter(event => event.type === 'user/message').map(event => event.data)).toEqual(expected.trim().split('\n').slice(1).map(line => JSON.parse(line)).filter(event => event.type === 'user/message').map(event => event.data))
       await handle.close()
@@ -188,8 +538,8 @@ describe('legacy Session copy repair', () => {
     } finally { await ctx.fiber.dispose() }
     ctx = await backend()
     try {
-      const handle = await ctx.sessionPersistence.open(SessionId('issue-223-legacy'), 'read')
-      expect((await handle.read()).events.filter(event => event.type === 'user/message')).toHaveLength(3)
+      const handle = await ctx.sessionPersistence.open(SessionId(id), 'read')
+      expect((await handle.read()).events.filter(event => event.type === 'user/message').map(event => event.data)).toEqual(expected.trim().split('\n').slice(1).map(line => JSON.parse(line)).filter(event => event.type === 'user/message').map(event => event.data))
       await handle.close()
     } finally { await ctx.fiber.dispose() }
     expect(await readFile(original)).toEqual(repairedV0)
