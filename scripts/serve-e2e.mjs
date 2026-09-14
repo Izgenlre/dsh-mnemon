@@ -12,6 +12,7 @@ import { documentArchiveModel } from './fixtures/document-archive-model.mjs'
 import { runtimeRoutingModel } from './fixtures/runtime-routing-model.mjs'
 import { runtimeWriteScopeModel } from './fixtures/runtime-write-scope-model.mjs'
 import { resultToolCacheModel } from './fixtures/result-tool-cache-model.mjs'
+import { legacySessionReplayModel } from './fixtures/legacy-session-replay-model.mjs'
 import { reviewEvidenceModel, scopedOverviewPlugin } from './fixtures/review-evidence-model.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -27,6 +28,7 @@ for (const flag of flags) {
   if (flag === '--runtime-routing') continue
   if (flag === '--runtime-write-scope') continue
   if (flag === '--result-tool-cache') continue
+  if (flag === '--legacy-session-replay') continue
   if (flag === '--review-evidence') continue
   if (flag.startsWith('--electron=')) {
     const value = flag.slice('--electron='.length)
@@ -75,6 +77,7 @@ const reviewModel = flags.has('--review-evidence') ? reviewEvidenceModel(event =
 const scriptedModel = flags.has('--runtime-routing') ? runtimeRoutingModel(event => console.log('Runtime routing: ' + JSON.stringify(event)))
   : flags.has('--runtime-write-scope') ? runtimeWriteScopeModel(event => console.log('Runtime write scope: ' + JSON.stringify(event)))
   : flags.has('--result-tool-cache') ? resultToolCacheModel(event => console.log('Result tool cache: ' + JSON.stringify(event)))
+  : flags.has('--legacy-session-replay') ? legacySessionReplayModel(event => console.log('Legacy replay: ' + JSON.stringify(event)))
   : flags.has('--document-archive') ? documentArchiveModel(event => console.log('Document archive: ' + JSON.stringify(event))) : reviewModel ?? protectionModel
 const reviewFailure = flags.has('--review-failure')
 const model = createServer(async (request, response) => {

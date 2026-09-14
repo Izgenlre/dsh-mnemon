@@ -46,7 +46,11 @@ const relativeReadmeImages = readmeFiles.flatMap((path) => {
 // recovery instructions; Source implementations remain independent artifacts.
 // Runtime archive preflight and compensation add bounded Host recovery code.
 // The review publication/guard helper adds about 4 KB of Host-only code.
-const maximumUnpackedBytes = 1_284_000
+// Audited legacy repair, including recorded-ID chain proofs, stays in the
+// maintenance executable. Its measured growth is ~24 KB over the null-name
+// repair baseline; retain ~2.2 KB for the separately verified Host grant fix.
+// No Source implementation enters the Starter.
+const maximumUnpackedBytes = 1_318_000
 
 if (missing.length > 0 || unexpected.length > 0 || hostLeaks.length > 0 || relativeReadmeImages.length > 0 || pack.unpackedSize > maximumUnpackedBytes) {
   if (missing.length > 0) console.error(`Missing package files:\n${missing.map(path => `- ${path}`).join('\n')}`)
