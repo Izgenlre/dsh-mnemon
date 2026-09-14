@@ -28,6 +28,19 @@ A canary turn also completed through the combined Session's actual WebUI. Cold r
 |---|---|
 | ![Combined history after Host restart](./251-combined-cold-reopen.jpg) | ![Tool output and continued exchange after Host restart](./251-combined-cold-new-turn.jpg) |
 
+Two further fixtures isolate null streaming names: [raw deltas](../../../tests/fixtures/issue-251-null-name-v0.jsonl) and [packed deltas](../../../tests/fixtures/issue-251-null-name-packed-v0.jsonl). Both retain valid durable tool identities and start with an empty argument fragment. The actual WebUI rejected the originals at the v1→v2 accumulator and packed decoder respectively; the preceding CLI revision `83d0c40` also refused copies. The updated CLI normalized three logical names in each, expanding only the packed row. Both histories then loaded, displayed the original user/assistant messages and tool result, and accepted a new canary turn through the loopback route. Each v3 log had 42 physical rows; structural comparison retained historical messages, durable calls/results and exact timed replay after the intended name normalization. Original and repaired v0 hashes remained unchanged, as recorded in [machine-readable evidence](./verification.json).
+
+| Null-name artifact before repair | After migration and history rendering |
+|---|---|
+| ![Raw null names refused](./251-null-raw-before.jpg) | ![Raw null names repaired](./251-null-raw-after.jpg) |
+| ![Packed null names refused](./251-null-packed-before.jpg) | ![Packed null names repaired](./251-null-packed-after.jpg) |
+
+After a Host restart, both Sessions cold reopened in an independent Chrome test window against the same disposable Profile. Historical tool output and the earlier canary exchanges remained visible. The in-app browser had encountered a client-bundle load failure before Session selection; the bundle returned HTTP 200 and passed syntax checking. Chrome loaded the same Host normally, without changing Host or browser security configuration.
+
+| Raw null-name history after cold reopen | Packed null-name history after cold reopen |
+|---|---|
+| ![Raw history, tool result and canary after restart](./251-null-raw-cold-reopen.jpg) | ![Packed history, tool result and canary after restart](./251-null-packed-cold-reopen.jpg) |
+
 The shared Starter baseline also loaded all three optional strategy extensions and reported the installed Native CLI 0.2.8. A separate disposable real-CLI create/write/keyword-recall/forget smoke passed. [Native status screenshot](./baseline-native-status.jpg). These checks do not imply that this patch changes Native storage.
 
 ## Audited transformations and boundaries
@@ -38,28 +51,32 @@ The shared Starter baseline also loaded all three optional strategy extensions a
 | Compatible descriptor v2 | Change only version 2 to 3 after checking the exact historical keys and every applicable frozen v3 constraint. |
 | Packed tool deltas with empty string ID or name | Expand to their exact raw delta events, preserving logical sequence, timing, names and arguments. |
 | Already raw empty string deltas | Keep byte-identical; the actual released migration supports them. |
-| Null names, empty completed/durable call identities, incompatible descriptors or unsafe packed rows | Report bounded line/event/path diagnostics, exit 1 and publish no output. |
+| Own null names in exact raw or packed tool deltas | Retain the field as `name:""`, preserving assembly and token timing; expand packed rows without changing IDs, logical coordinates or arguments. |
+| Empty completed/durable call identities, incompatible descriptors, unknown or unsafe affected delta shapes | Report bounded line/event/path diagnostics, exit 1 and publish no output. |
 
 Descriptor v2 was found in published `dsh-subagent@0.1.1-rc.2`; the audited `0.1.2-alpha.2` and `0.1.2-rc.1` artifacts already use v3. Comparing `lib/types/descriptor.js` and the cold-resume code in `continuation.js` shows v3 adds optional `agentReasoningEffort`. Leaving that absent preserves the old declared composition. One-shot records permit only version/mode/provider and optional label. Continuable records permit label, a paired agentProvider/agentModel, persona and closed allow/deny tool filters. No field is trimmed, synthesized or discarded. Runtime defaults across different DSH releases are outside this equivalence claim.
 
 Historical `dsh-session@0.1.2-rc.1/lib/types/chunk-rows.js` accepts string placeholders and defines their exact expansion. The current physical decoder rejects packed empty IDs. Packed empty names can pass migration but then fail `expandAssistantStream`. In contrast, the actual v0→v3 path preserves raw empty-string deltas through `AssistantStreamAccumulator`. Tests therefore validate complete migration **and timed stream replay**, not just the exported standalone payload validator.
 
-Dropping deltas would lose timestamps, arguments and provenance. Replacing null names can alter first-token timing. Inventing a durable call ID cannot recover the original identity passed to provider replay, tool execution, hooks, PTC subcalls and external spill files. Even a unique local call/result pairing does not prove those external references. Those variants require a sanitized artifact and recovery knowledge from their original writer; this change does not claim every shape in #251 is recoverable.
+For null names, the official `dsh-llm-deepseek@0.1.2-rc.1` emitter copies a non-undefined transport name without a string check. Both the old and current `BlockAssembler` assign names only when truthy, so null→empty produces the same state transition at every prefix. Both versions count a token when arguments are nonempty **or the name property is present**; retaining the property preserves TTFT, including an initial empty argument fragment. The current accumulator keeps empty-string names as raw records. A separate audit executed the published old and new assemblers across 36 prefixes and five variants, compared actual old/current Session statistics, and verified v3 publication, cold reopen and durable/owner metadata preservation. Packed null names were outside the old codec, but normalization followed by expansion matches that codec's decoding of the normalized row exactly. The repair uses closed field sets, safe coordinates and duplicate-key checks, without matching a later call or inventing a name.
+
+Dropping deltas would lose timestamps, arguments and provenance. Deleting a null name property can change token timing; replacing its value with an empty string does not. Inventing a durable call ID cannot recover the original identity passed to provider replay, tool execution, hooks, PTC subcalls and external spill files. Even a unique local call/result pairing does not prove those external references. Empty durable IDs remain refused; this change does not claim every shape in #251 is recoverable.
 
 The published v0→v1 migration `lib/index.js` is byte-identical in 0.1.5-rc.1 and 0.1.5-rc.2 (SHA-256 `15ae26b90310d83b1b90a5e7cad9e2f34282fddaba2f19f2fd2232382065603d`). Full execution here uses rc.1. No published `dsh@0.1.2-rc.2` was found in the registry; the reported source build cannot be identified without its commit.
 
 ## Regression and reproduction
 
-[Repair tests](../../../tests/legacy-session-repair.spec.ts) exercise published JSONL persistence, v3 publication, cold reopen and exact timed stream expansion; strict descriptor gates; all supported repairs together; unrelated plugin preservation; raw and compressed idempotence; exclusive output creation; diagnostics and refusal; duplicate fields, malformed frames, unsafe coordinates and expanded-size limits. The [combined fixture](../../../tests/fixtures/issue-251-repairable-v0.jsonl) contains all supported repairs. [Machine-readable evidence](./verification.json).
+[Repair tests](../../../tests/legacy-session-repair.spec.ts) exercise published JSONL persistence, v3 publication, cold reopen and exact timed stream expansion; strict descriptor gates; combined repairs; null-name prefix assembly and token timing; unrelated plugin preservation; raw and compressed idempotence; exclusive output creation; diagnostics and refusal; duplicate fields, malformed frames, unsafe coordinates and expanded-size limits. The [combined fixture](../../../tests/fixtures/issue-251-repairable-v0.jsonl) covers summaries, descriptors and string placeholders; the separate raw/packed null-name fixtures isolate that failure. [Machine-readable evidence](./verification.json).
 
-Final suites: 1,028 root tests and 323 independent plugin tests passed; seven opt-in tests were skipped. The repair suite has 66 cases. `pnpm verify` passed; after the final legacy diagnostic adjustment, types, the complete root suite and package checks passed again. Deterministic builds, docs, public entries, publint/attw and real Headless activation passed. The maintenance executable increases the measured package to 1,288,712 unpacked bytes; its guard is now 1,292,000 bytes. The Host and Client bundles retain their existing code. Independent review also checked 144 descriptor combinations and 125 packed coordinate boundaries against BigInt.
+Final suites: 1,050 root tests and 323 independent plugin tests passed; seven opt-in tests were skipped. The repair suite has 88 cases. `pnpm verify` passed after the null-name normalization change, including deterministic builds, types, docs, public entries, publint/attw and real Headless activation. The maintenance executable increases the measured package to 1,290,228 unpacked bytes, within the existing 1,292,000-byte guard. The Host and Client bundles retain their existing code. Independent review also checked 144 descriptor combinations and 125 packed coordinate boundaries against BigInt.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm exec vitest run tests/legacy-session-repair.spec.ts tests/lifecycle.spec.ts
 pnpm run verify
 node bin/repair-legacy-session.mjs --input tests/fixtures/issue-251-repairable-v0.jsonl
+node bin/repair-legacy-session.mjs --input tests/fixtures/issue-251-null-name-v0.jsonl
 MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --strategy-extensions
 ```
 
-The WebUI screenshots cover Runtime summary recovery and the combined summary/descriptor/packed-string artifact. Exact timed delta preservation is additionally verified by the published loader and stream replay tests. No Windows source build, live third-party Provider or production Session was tested.
+The WebUI screenshots cover Runtime summary recovery, the combined summary/descriptor/packed-string artifact and both null-name forms. Exact timed delta preservation is additionally verified by the published loader and stream replay tests. No Windows source build, live third-party Provider or production Session was tested.

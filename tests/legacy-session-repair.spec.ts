@@ -7,7 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { assertReleasedEventPayload } from '@deepseek-ai/dsh-session-format-v0-to-v1'
-import { expandAssistantStream } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, assistantStreamFirstTokenTime, expandAssistantStream, isTokenDelta } from '@deepseek-ai/dsh-llm'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const command = resolve('bin/repair-legacy-session.mjs')
@@ -15,6 +15,8 @@ const fixture = await readFile(new URL('./fixtures/issue-223-legacy-v0.jsonl', i
 const runtimeFixture = await readFile(new URL('./fixtures/issue-251-legacy-v0.jsonl', import.meta.url), 'utf8')
 const toolsFixture = await readFile(new URL('./fixtures/issue-251-valid-tools-v0.jsonl', import.meta.url), 'utf8')
 const combinedFixture = await readFile(new URL('./fixtures/issue-251-repairable-v0.jsonl', import.meta.url), 'utf8')
+const nullFixture = await readFile(new URL('./fixtures/issue-251-null-name-v0.jsonl', import.meta.url), 'utf8')
+const packedNullFixture = await readFile(new URL('./fixtures/issue-251-null-name-packed-v0.jsonl', import.meta.url), 'utf8')
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function directory() {
@@ -146,17 +148,169 @@ describe('legacy Session copy repair', () => {
     }
   })
 
-  it.each([false, true])('refuses null streaming names without dropping or changing deltas (packed=%s)', async packed => {
+  it.each([false, true].flatMap(packed => ['', 'call-251'].flatMap(id => (['none', 'zstd'] as const).map(compression => ({ packed, id, compression })))))('normalizes null delta names without changing assembly or first-token timing (%#)', async ({ packed, id, compression }) => {
     const root = await directory()
-    const text = toolStreamFixture(packed, 'call-251', null)
+    const text = toolStreamFixture(packed, id, null)
+    const normalized = toolStreamFixture(false, id, '')
+    const raw = toolStreamFixture(false, id, null)
     const input = join(root, 'input')
-    await writeFile(input, text)
+    const output = join(root, 'output')
+    const before = compression === 'none' ? Buffer.from(text) : compressFrames(text)
+    await writeFile(input, before)
     await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow(packed ? 'id and optional name must be strings' : 'tool-call-delta name must be a string')
-    const result = cli('--input', input, '--output', join(root, 'output'))
-    expect(result.status).toBe(1)
-    expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'refused', blockers: [{ code: 'null-stream-tool-name', occurrences: packed ? 1 : 3 }] })
-    expect(await readFile(input, 'utf8')).toBe(text)
+    const preview = cli('--input', input)
+    expect(preview.status).toBe(0)
+    expect(JSON.parse(preview.stdout)).toMatchObject({ mode: 'preview', normalizedToolChunkNames: 3, blockers: [] })
     expect(await readdir(root)).toEqual(['before', 'input'])
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'copy', normalizedToolChunkNames: 3, expandedToolChunkRows: packed ? 1 : 0, expandedToolChunks: packed ? 3 : 0, blockers: [] })
+    const after = await readFile(output)
+    const repaired = compression === 'none' ? after.toString() : decompressFrames(after)
+    expect(repaired).toBe(normalized)
+    expect(await readFile(input)).toEqual(before)
+    expect(cli('--input', input, '--output', output).status).toBe(1)
+    expect(await readFile(output)).toEqual(after)
+    const migrated = await publishedLoad(join(root, 'after'), repaired, 'write')
+    const stream = replayStream(migrated)
+    const originalChunks = raw.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.type === 'assistant/chunk').map(row => ({ time: row.time, chunk: row.data.chunk }))
+    expect(stream).toEqual(originalChunks.map(value => ({ ...value, chunk: value.chunk.name === null ? { ...value.chunk, name: '' } : value.chunk })))
+    const originalAssembler = new BlockAssembler()
+    const normalizedAssembler = new BlockAssembler()
+    for (const [index, original] of originalChunks.entries()) {
+      originalAssembler.push(original.chunk)
+      normalizedAssembler.push(stream[index]!.chunk)
+      expect(normalizedAssembler.blocks()).toEqual(originalAssembler.blocks())
+      expect(isTokenDelta(stream[index]!.chunk)).toBe(isTokenDelta(original.chunk))
+    }
+    const migratedAssistant = migrated.events.find(event => event.type === 'assistant/message')!
+    const migratedStream = (migratedAssistant.data as { stream: Parameters<typeof assistantStreamFirstTokenTime>[0] }).stream
+    expect(assistantStreamFirstTokenTime(migratedStream)).toBe(originalChunks.find(value => isTokenDelta(value.chunk))!.time)
+    expect(originalChunks[0]!.chunk.argumentsDelta).toBe('')
+    expect(replayStream(await publishedLoad(join(root, 'after'), repaired))).toEqual(stream)
+    const repeated = cli('--input', output, '--output', join(root, 'idempotent'))
+    expect(repeated.status).toBe(0)
+    expect(JSON.parse(repeated.stdout)).toMatchObject({ normalizedToolChunkNames: 0, expandedToolChunkRows: 0 })
+    expect(await readFile(join(root, 'idempotent'))).toEqual(after)
+  })
+
+  it.each([nullFixture, packedNullFixture])('restores the null-name WebUI fixtures with durable messages and other plugin content intact (%#)', async text => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow(/name must be a string|id and optional name must be strings/)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ repairedMessages: 0, repairedDescriptors: 0, normalizedToolChunkNames: 3, blockers: [] })
+    const after = await readFile(output, 'utf8')
+    const migrated = await publishedLoad(join(root, 'after'), after, 'write')
+    const originals = nullFixture.trim().split('\n').map(line => JSON.parse(line))
+    for (const type of ['user/message', 'tool/call', 'tool/result']) {
+      expect(migrated.events.filter(event => event.type === type).map(event => event.data)).toEqual(originals.filter(event => event.type === type).map(event => event.data))
+    }
+    const assistants = migrated.events.filter(event => event.type === 'assistant/message')
+    expect(assistants.map(event => (event.data as any).message)).toEqual(originals.filter(event => event.type === 'assistant/message').map(event => event.data.message))
+    expect(assistants.flatMap(event => expandAssistantStream((event.data as any).stream))).toEqual(originals.filter(event => event.type === 'assistant/chunk')
+      .map(event => ({ time: event.time, chunk: event.data.chunk.name === null ? { ...event.data.chunk, name: '' } : event.data.chunk })))
+    expect((await publishedLoad(join(root, 'after'), after)).events).toEqual(migrated.events)
+    expect(await readFile(input, 'utf8')).toBe(text)
+  })
+
+  it('changes only the raw null token, retaining name presence and unrelated null metadata', async () => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    const row = '  {"type":"assistant/chunk", "seq":2e0, "time":1.2300e+3, "ignorable":true, "data":{"turn":1,"step":1,"chunk":{"type":"tool-call-delta", "index":0, "id":"\\u0063all-251", "na\\u006de" : null, "argumentsDelta":"\\\"name\\\":null"}}}\r\n'
+    const text = toolsFixture.split('\n')[0] + '\r\n' + row + '{"type":"owner/opaque","data":{"name":null,"n":9007199254740993}}\r\n'
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout).normalizedToolChunkNames).toBe(1)
+    expect(await readFile(output, 'utf8')).toBe(text.replace(' : null', ' : ""'))
+    expect(await readFile(input, 'utf8')).toBe(text)
+  })
+
+  it('preserves every assembler prefix after an earlier name and across block closure', async () => {
+    const root = await directory()
+    const rows = toolStreamFixture(false, 'call-251', null).trim().split('\n').map(line => JSON.parse(line))
+    const first = rows.find(row => row.type === 'assistant/chunk')
+    const extra = [
+      { ...first.data.chunk, name: 'synthetic_lookup', argumentsDelta: '' },
+      ...rows.filter(row => row.type === 'assistant/chunk').map(row => row.data.chunk),
+      { ...first.data.chunk, name: null, argumentsDelta: 'ignored after block-end' },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } },
+      { type: 'finish', reason: { kind: 'tool-calls' }, replayState: { response: { name: null, owner: 'untouched' }, blocks: [{ name: null }] } },
+    ]
+    const text = JSON.stringify(rows[0]) + '\n' + extra.map((chunk, index) => JSON.stringify({ type: 'assistant/chunk', seq: index, time: 1000 + index, data: { turn: 1, step: 1, chunk } })).join('\n') + '\n'
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    expect(cli('--input', input, '--output', output).status).toBe(0)
+    const normalized = (await readFile(output, 'utf8')).trim().split('\n').slice(1).map(line => JSON.parse(line).data.chunk)
+    const before = new BlockAssembler()
+    const after = new BlockAssembler()
+    const state = (assembler: BlockAssembler) => ({ blocks: assembler.blocks(), interrupted: assembler.interruptedBlocks(), usage: assembler.usage, finish: assembler.finish, replayState: assembler.replayState })
+    for (const [index, chunk] of extra.entries()) {
+      before.push(chunk)
+      after.push(normalized[index])
+      expect(state(after)).toEqual(state(before))
+      expect(isTokenDelta(normalized[index])).toBe(isTokenDelta(chunk))
+    }
+    expect(normalized.at(-1)).toEqual(extra.at(-1))
+  })
+
+  it('refuses unknown raw null-name shapes and invalid coordinates instead of publishing a partial repair', async () => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    for (const mutate of [
+      (row: any) => { row.extra = true },
+      (row: any) => { row.ignorable = false },
+      (row: any) => { row.data.extra = true },
+      (row: any) => { row.data.chunk.extra = true },
+      (row: any) => { row.seq = Number.MAX_SAFE_INTEGER + 1 },
+      (row: any) => { row.time = Number.MAX_SAFE_INTEGER + 1 },
+      (row: any) => { row.time = 0.5 },
+      (row: any) => { row.data.turn = -1 },
+      (row: any) => { row.data.step = 0.5 },
+      (row: any) => { row.data.chunk.index = -1 },
+      (row: any) => { row.data.chunk.id = null },
+      (row: any) => { row.data.chunk.argumentsDelta = null },
+      (row: any) => { delete row.data.chunk.argumentsDelta },
+    ]) {
+      const rows = toolStreamFixture(false, 'call-251', null).trim().split('\n').map(line => JSON.parse(line))
+      mutate(rows.find(row => row.type === 'assistant/chunk'))
+      const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+      await writeFile(input, text)
+      const result = cli('--input', input, '--output', output)
+      expect(result.status).toBe(1)
+      expect(JSON.parse(result.stdout)).toMatchObject({ mode: 'refused', outputSha256: null, blockers: [{ code: 'null-stream-tool-name', occurrences: 1 }] })
+      expect(await readFile(input, 'utf8')).toBe(text)
+      expect(await readdir(root)).toEqual(['input'])
+    }
+    await writeFile(input, toolStreamFixture(false, 'call-251', null).replace('"index":0', '"index":-0'))
+    expect(cli('--input', input, '--output', output).status).toBe(1)
+    expect(await readdir(root)).toEqual(['input'])
+  })
+
+  it('rejects duplicate properties along raw and packed null-name paths', async () => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const raw = toolStreamFixture(false, 'call-251', null)
+    for (const text of [
+      raw.replace('"type":"assistant/chunk"', '"type":"other","type":"assistant/chunk"'),
+      raw.replace('"chunk":{"type":"tool-call-delta"', '"chunk":{},"chunk":{"type":"tool-call-delta"'),
+      raw.replace('"name":null', '"name":"other","na\\u006de":null'),
+      toolStreamFixture(true, 'call-251', null).replace('"name":null', '"name":"other","name":null'),
+    ]) {
+      await writeFile(input, text)
+      const result = cli('--input', input, '--output', join(root, 'output'))
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('Duplicate JSON property')
+      expect(await readFile(input, 'utf8')).toBe(text)
+      expect(await readdir(root)).toEqual(['input'])
+    }
   })
 
   it.each([false, true])('refuses empty durable tool identities, including ambiguous advertisements (%s)', async ambiguous => {
@@ -218,9 +372,9 @@ describe('legacy Session copy repair', () => {
     (row: any) => { row.data.args = [] },
     (row: any) => { row.data.args[0] = {} },
     (row: any) => { row.data.index = -1 },
-  ])('refuses packed expansion when fields or coordinates would lose information (%#)', async mutate => {
+  ].flatMap(mutate => [undefined, null].map(name => ({ mutate, name }))))('refuses packed expansion when fields or coordinates would lose information (%#)', async ({ mutate, name }) => {
     const root = await directory()
-    const rows = toolStreamFixture(true, '').trim().split('\n').map(line => JSON.parse(line))
+    const rows = toolStreamFixture(true, '', name).trim().split('\n').map(line => JSON.parse(line))
     mutate(rows.find(row => row.type === 'tool-call-chunks'))
     const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
     const input = join(root, 'input')
@@ -267,7 +421,7 @@ describe('legacy Session copy repair', () => {
     const root = await directory()
     const rows = descriptorFixture({ ...descriptorV2, extra: true }).replace(runtimeExpected, runtimeFixture).trim().split('\n').map(line => JSON.parse(line))
     for (let index = 0; index < 15; index++) rows.push({ type: 'assistant/chunk', seq: 18 + index, time: 1789030660071,
-      data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: '', name: null, argumentsDelta: 'private fixture payload' } } })
+      data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: '', name: null, argumentsDelta: 'private fixture payload', extra: 'private fixture payload' } } })
     rows.find(row => row.type === 'assistant/chunk' && row.data.chunk.name === null).seq = { malformed: 'private fixture payload' }
     rows.push({ type: 'tool/call', seq: 33, time: 1789030660071, data: { turn: 1, step: 1, callId: '', name: 'synthetic_lookup', arguments: '{}' } })
     const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'

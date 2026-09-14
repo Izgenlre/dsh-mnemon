@@ -41,13 +41,23 @@ function supportedDescriptorV2(value) {
 function supportedPackedToolRun(row) {
   if (!exactKeys(row, ['type', 'seq0', 'time0', 'data']) || !count(row.seq0) || !integer(row.time0)) return false
   const data = row.data
-  if (!exactKeys(data, ['turn', 'step', 'index', 'id', 'dt', 'args'], ['name']) || typeof data.id !== 'string' || (data.id !== '' && data.name !== '') ||
-      (Object.hasOwn(data, 'name') && typeof data.name !== 'string')) return false
+  if (!exactKeys(data, ['turn', 'step', 'index', 'id', 'dt', 'args'], ['name']) || typeof data.id !== 'string' || (data.id !== '' && data.name !== '' && data.name !== null) ||
+      (Object.hasOwn(data, 'name') && data.name !== null && typeof data.name !== 'string')) return false
   if (![data.turn, data.step, data.index].every(count) || !Array.isArray(data.args) || data.args.length === 0 ||
       !data.args.every(value => typeof value === 'string') || !Array.isArray(data.dt) || data.dt.length !== data.args.length - 1 ||
       data.args.length - 1 > Number.MAX_SAFE_INTEGER - row.seq0) return false
   let time = row.time0
   return data.dt.every(gap => integer(gap) && integer(time += gap))
+}
+
+function supportedNullToolDelta(row) {
+  if (!exactKeys(row, ['type', 'seq', 'time', 'data'], ['ignorable']) || !count(row.seq) || !integer(row.time) ||
+      (Object.hasOwn(row, 'ignorable') && row.ignorable !== true)) return false
+  const data = row.data
+  if (!exactKeys(data, ['turn', 'step', 'chunk']) || ![data.turn, data.step].every(count)) return false
+  const chunk = data.chunk
+  return exactKeys(chunk, ['type', 'index', 'id', 'name', 'argumentsDelta']) && chunk.type === 'tool-call-delta' &&
+    chunk.name === null && count(chunk.index) && typeof chunk.id === 'string' && typeof chunk.argumentsDelta === 'string'
 }
 
 // Diagnose the other concrete legacy shapes reported in #251 without inventing
@@ -61,11 +71,6 @@ function legacyBlockers() {
     issue.occurrences++
     const seq = row.seq ?? row.seq0
     if (issue.samples.length < 10) issue.samples.push({ line, type: row.type, ...(count(seq) ? { seq } : {}), path })
-  }
-  const stream = (value, row, line, path) => {
-    // The active migration retains raw deltas with empty IDs or names. Null
-    // names are different: the current AssistantStreamAccumulator rejects them.
-    if (value?.name === null) add('null-stream-tool-name', 'A null streaming tool name is outside the released contract.', row, line, `${path}.name`)
   }
   const identifier = (value, row, line, path) => {
     if (value === '') add('empty-durable-tool-id', 'An empty durable tool ID needs recovery by its original writer; call identities are not synthesized.', row, line, path)
@@ -85,11 +90,12 @@ function legacyBlockers() {
         add('unsupported-subagent-descriptor', 'Only exact historical v2 descriptors with equivalent v3 composition are supported; this descriptor needs recovery by its original writer.', row, line, 'data.version')
       }
       if (row?.type === 'tool-call-chunks') {
-        stream(data, row, line, 'data')
-        if ((data?.id === '' || data?.name === '') && !supportedPackedToolRun(row)) add('unsupported-packed-tool-chunks', 'The packed row cannot be expanded losslessly: it needs exact fields, string deltas and safe sequence/time coordinates.', row, line, 'data')
+        if ((data?.id === '' || data?.name === '' || data?.name === null) && !supportedPackedToolRun(row)) add('unsupported-packed-tool-chunks', 'The packed row cannot be expanded losslessly: it needs exact fields, string deltas and safe sequence/time coordinates.', row, line, 'data')
       }
       if (row?.type === 'assistant/chunk') {
-        if (data?.chunk?.type === 'tool-call-delta') stream(data.chunk, row, line, 'data.chunk')
+        if (data?.chunk?.type === 'tool-call-delta' && data.chunk.name === null && !supportedNullToolDelta(row)) {
+          add('null-stream-tool-name', 'A null streaming tool name needs exact raw fields, string ID/arguments and safe coordinates before normalization.', row, line, 'data.chunk.name')
+        }
         if (data?.chunk?.type === 'block-end') block(data.chunk.block, row, line, 'data.chunk.block')
       }
       if (row?.type === 'assistant/message') {
@@ -182,6 +188,16 @@ function promoteDescriptor(line) {
   return line.slice(0, version.valueStart) + '3' + line.slice(version.end)
 }
 
+function normalizeNullToolName(line) {
+  const data = objectMembers(line, 0).find(member => member.name === 'data')
+  const chunk = objectMembers(line, data.valueStart).find(member => member.name === 'chunk')
+  const name = objectMembers(line, chunk.valueStart).find(member => member.name === 'name')
+  // Old/current assemblers only assign truthy names; token timing instead uses
+  // name !== undefined. Keep this property: deleting it would change TTFT for
+  // an empty argument fragment. Every other raw byte remains unchanged.
+  return line.slice(0, name.valueStart) + '""' + line.slice(name.end)
+}
+
 function expandPackedToolRun(line, row, retain) {
   const data = objectMembers(line, 0).find(member => member.name === 'data')
   objectMembers(line, data.valueStart) // Reject duplicate fields before reserializing this row.
@@ -189,14 +205,15 @@ function expandPackedToolRun(line, row, retain) {
   const expanded = []
   for (let index = 0; index < row.data.args.length; index++) {
     if (index > 0) time += row.data.dt[index - 1]
-    // Exactly the historical packed-row expansion. No ID/name inference and
+    // Historical packed-row expansion after preserving null-name presence as
+    // an empty string. No ID/name inference and
     // no dropped chunks: the active v1 -> v2 migration retains these as raw
     // stream records when their IDs or names are empty strings.
     expanded.push(retain(JSON.stringify({
       type: 'assistant/chunk', seq: row.seq0 + index, time,
       data: { turn: row.data.turn, step: row.data.step, chunk: {
         type: 'tool-call-delta', index: row.data.index, id: row.data.id,
-        ...(Object.hasOwn(row.data, 'name') ? { name: row.data.name } : {}), argumentsDelta: row.data.args[index],
+        ...(Object.hasOwn(row.data, 'name') ? { name: row.data.name ?? '' } : {}), argumentsDelta: row.data.args[index],
       } },
     }) + (line.endsWith('\r\n') ? '\r\n' : '\n')))
   }
@@ -280,6 +297,7 @@ export async function repairLegacySession(input, output) {
   let descriptors = 0
   let expandedRows = 0
   let expandedChunks = 0
+  let normalizedNames = 0
   let outputBytes = 0
   const retain = line => {
     outputBytes += Buffer.byteLength(line)
@@ -307,7 +325,12 @@ export async function repairLegacySession(input, output) {
     if (row?.type === 'tool-call-chunks' && supportedPackedToolRun(row)) {
       expandedRows++
       expandedChunks += row.data.args.length
+      if (row.data.name === null) normalizedNames += row.data.args.length
       return expandPackedToolRun(line, row, retain)
+    }
+    if (row?.type === 'assistant/chunk' && supportedNullToolDelta(row)) {
+      normalizedNames++
+      return retain(normalizeNullToolName(line))
     }
     const source = row?.data?.source
     if (row?.type !== 'user/message' || source?.kind !== 'plugin' || source.plugin !== 'dsh-mnemon' ||
@@ -317,7 +340,7 @@ export async function repairLegacySession(input, output) {
   }).join('')
   const plain = Buffer.from(repaired)
   // A clean artifact stays byte-identical, including its existing frame layout.
-  const result = changes + descriptors + expandedRows === 0 ? original : compressed ? encodeFrames(repaired) : plain
+  const result = changes + descriptors + expandedRows + normalizedNames === 0 ? original : compressed ? encodeFrames(repaired) : plain
   if (result.length > maximumBytes) throw new Error('Repaired Session exceeds the 128 MiB repair limit; no output written.')
   const blockers = diagnostics.report()
   if (output !== undefined && blockers.length === 0) {
@@ -339,6 +362,7 @@ export async function repairLegacySession(input, output) {
     repairedDescriptors: descriptors,
     expandedToolChunkRows: expandedRows,
     expandedToolChunks: expandedChunks,
+    normalizedToolChunkNames: normalizedNames,
     inputSha256: sha256(original),
     outputSha256: blockers.length === 0 ? sha256(result) : null,
     originalPreserved: true,
@@ -348,7 +372,7 @@ export async function repairLegacySession(input, output) {
 }
 
 async function main(args) {
-  const usage = 'Usage: dsh-mnemon-repair-session --input FILE [--output NEW_FILE]\nWithout --output, preview the three known Mnemon v0 summary repairs, exact compatible v2 subagent descriptors and lossless expansion of packed deltas with empty IDs/names. Unsupported descriptor/tool shapes are reported with exit status 1 and prevent output. DSH must still validate the repaired copy. Stop DSH and work on a backup copy. The input and existing output files are never overwritten.'
+  const usage = 'Usage: dsh-mnemon-repair-session --input FILE [--output NEW_FILE]\nWithout --output, preview the three known Mnemon v0 summary repairs, exact compatible v2 subagent descriptors, packed deltas with empty IDs/names and property-preserving null-to-empty delta names. Unsupported descriptor/tool shapes are reported with exit status 1 and prevent output. DSH must still validate the repaired copy. Stop DSH and work on a backup copy. The input and existing output files are never overwritten.'
   if (args.length === 1 && args[0] === '--help') { console.log(usage); return }
   const options = new Map()
   for (let index = 0; index < args.length; index += 2) {

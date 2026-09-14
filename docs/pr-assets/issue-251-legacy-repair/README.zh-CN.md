@@ -28,6 +28,19 @@
 |---|---|
 | ![Host 重启后的组合历史](./251-combined-cold-reopen.jpg) | ![Host 重启后的工具输出与续写对话](./251-combined-cold-new-turn.jpg) |
 
+另两个夹具单独复现流式 null name：[raw delta](../../../tests/fixtures/issue-251-null-name-v0.jsonl) 与 [packed delta](../../../tests/fixtures/issue-251-null-name-packed-v0.jsonl)。两者保留有效持久工具身份，并以空参数片段开始。真实 WebUI 分别在 v1→v2 accumulator 与 packed decoder 拒绝原件；前一 CLI 版本 `83d0c40` 同样拒绝发布副本。新 CLI 各规范化三个逻辑 name，仅展开 packed 行。两段历史均正常加载，显示原始用户/助手消息与工具结果，并通过回环路由完成新 canary 对话。各 v3 日志有 42 个物理行；结构比较确认历史消息、持久调用/结果及按预期规范化后的精确带时间回放均保留。原始与修复 v0 的 hash 未变，详见[机器可读记录](./verification.json)。
+
+| null-name 制品修复前 | 迁移并渲染历史后 |
+|---|---|
+| ![raw null name 被拒绝](./251-null-raw-before.jpg) | ![raw null name 修复后](./251-null-raw-after.jpg) |
+| ![packed null name 被拒绝](./251-null-packed-before.jpg) | ![packed null name 修复后](./251-null-packed-after.jpg) |
+
+Host 重启后，独立 Chrome 测试窗口通过同一个一次性 Profile 冷打开了两段会话，历史工具输出与此前的 canary 对话均保留。内置浏览器在选择会话之前遇到 client bundle 加载错误；该 bundle 返回 HTTP 200，语法检查通过。Chrome 正常加载同一个 Host，未改动 Host 或浏览器安全配置。
+
+| raw null-name 历史冷打开后 | packed null-name 历史冷打开后 |
+|---|---|
+| ![重启后的 raw 历史、工具结果与 canary](./251-null-raw-cold-reopen.jpg) | ![重启后的 packed 历史、工具结果与 canary](./251-null-packed-cold-reopen.jpg) |
+
 共享 Starter 基线还启用了三个可选 Strategy 扩展，实际状态页显示已安装 Native CLI 0.2.8。一次性真实 CLI 的创建、写入、关键词召回与删除冒烟通过。[Native 状态截图](./baseline-native-status.jpg)。这些检查不表示此补丁修改了 Native 存储。
 
 ## 契约审计与修复边界
@@ -38,28 +51,32 @@
 | 兼容的 descriptor v2 | 检查严格的旧版字段集合及全部适用冻结 v3 约束后，仅将版本值由 2 改为 3。 |
 | ID 或 name 为空字符串的 packed 工具 delta | 展开为原有 raw delta 事件，保留逻辑序号、时间、name 和参数。 |
 | 已经为 raw 的空字符串 delta | 保持字节不变；实际已发布迁移支持此形状。 |
-| null name、完成或持久工具链中的空 ID、不兼容 descriptor、不安全 packed 行 | 输出有数量上限的行号/事件/字段路径诊断，退出码 1，不发布输出。 |
+| 严格 raw 或 packed 工具 delta 中自有的 null name | 保留字段为 `name:""`，维持组装和 token 计时；展开 packed 行时不改 ID、逻辑坐标或参数。 |
+| 完成或持久工具链中的空 ID、不兼容 descriptor、待修 delta 的未知结构或不安全坐标 | 输出有数量上限的行号/事件/字段路径诊断，退出码 1，不发布输出。 |
 
 已发布 `dsh-subagent@0.1.1-rc.2` 使用 descriptor v2；审计的 `0.1.2-alpha.2` 与 `0.1.2-rc.1` 已使用 v3。比较 `lib/types/descriptor.js` 和 `continuation.js` 的冷恢复代码可见，v3 增加可选 `agentReasoningEffort`；保持其缺省即可保留旧版声明的组合参数。One-shot 只允许 version/mode/provider 和可选 label；continuable 允许 label、成对 agentProvider/agentModel、persona 以及封闭 allow/deny toolFilter。不裁剪、生成或丢弃字段；不承诺不同 DSH 版本的运行时默认值相同。
 
 旧版 `dsh-session@0.1.2-rc.1/lib/types/chunk-rows.js` 接受字符串占位值，并定义无损展开。当前物理解码器拒绝 packed 空 ID；packed 空 name 可能通过迁移却在 `expandAssistantStream` 回放时报错。实际 v0→v3 流程则通过 `AssistantStreamAccumulator` 保留 raw 空字符串 delta，因此测试同时检查完整迁移和带时间戳的 stream 回放，而不是仅调用独立 payload 校验函数。
 
-删除 delta 会丢失时间、参数和 provenance；删除 null name 可能改变首 token 计时。生成新的持久调用 ID 无法还原 provider 回放、工具执行、hook、PTC 子调用和外部 spill 文件中的原始身份。即使本地 call/result 只有一种配对，也不能证明外部引用一致。此类形状仍需原写入方提供脱敏制品与恢复依据；本变更不声称 #251 中所有形状均可恢复。
+官方 `dsh-llm-deepseek@0.1.2-rc.1` emitter 会直接复制非 undefined 的 transport name，未要求字符串。旧版与当前 `BlockAssembler` 均仅在 name 为真值时赋值，因此 null→空字符串在每个前缀上保持相同状态转换。两版均在参数非空或 name 属性存在时计入 token；保留属性可维持 TTFT，包括首个空参数片段。当前 accumulator 会将空字符串 name 保留为 raw 记录。独立审计执行了已发布新旧 assembler 的五种变体、36 个前缀，比较真实新旧会话统计，并验证 v3 发布、冷打开以及 durable/owner metadata 保留。旧 codec 本身拒绝 packed null name，但规范化后再展开的结果与旧 codec 对规范化行的解码完全相同。修复仅使用封闭字段集合、安全坐标与重复键检查，不关联后续调用或推测工具名。
+
+删除 delta 会丢失时间、参数和 provenance；删除 null name 属性可能改变 token 计时，将其值改为空字符串则不会。生成新的持久调用 ID 无法还原 provider 回放、工具执行、hook、PTC 子调用和外部 spill 文件中的原始身份。即使本地 call/result 只有一种配对，也不能证明外部引用一致。持久空 ID 仍被拒绝；本变更不声称 #251 中所有形状均可恢复。
 
 已发布 0.1.5-rc.1 与 0.1.5-rc.2 的 v0→v1 迁移 `lib/index.js` 字节一致，SHA-256 为 `15ae26b90310d83b1b90a5e7cad9e2f34282fddaba2f19f2fd2232382065603d`。完整执行环境使用 rc.1。注册表未找到已发布的 `dsh@0.1.2-rc.2`；报告中的 source build 仍需其提交号才能确定。
 
 ## 回归与复现
 
-[修复测试](../../../tests/legacy-session-repair.spec.ts)覆盖已发布 JSONL 持久层、v3 发布、冷打开与精确的带时间 stream 回放、严格 descriptor 条件、所有支持形状组合修复、其他插件保留、普通/压缩幂等、独占输出、诊断与拒绝、重复字段、损坏帧、不安全坐标及展开大小上限。[组合夹具](../../../tests/fixtures/issue-251-repairable-v0.jsonl)包含全部支持的修复。[机器可读验证记录](./verification.json)。
+[修复测试](../../../tests/legacy-session-repair.spec.ts)覆盖已发布 JSONL 持久层、v3 发布、冷打开与精确的带时间 stream 回放、严格 descriptor 条件、组合修复、null name 各前缀组装与 token 计时、其他插件保留、普通/压缩幂等、独占输出、诊断与拒绝、重复字段、损坏帧、不安全坐标及展开大小上限。[组合夹具](../../../tests/fixtures/issue-251-repairable-v0.jsonl)覆盖 summary、descriptor 和字符串占位值；独立 raw/packed null-name 夹具单独复现该错误。[机器可读验证记录](./verification.json)。
 
-最终测试中，root 1,028 项与独立插件 323 项通过，七项 opt-in 测试跳过；修复专项有 66 项。`pnpm verify` 通过；最终补齐旧版诊断路径后，再次通过类型检查、全部 root 测试与包校验。确定性构建、文档、公开入口、publint/attw 和真实 Headless 激活均通过。维护命令使包的实测展开大小为 1,288,712 字节，上限调整为 1,292,000 字节；Host 和 Client bundle 代码保持原状。独立复审另检查了 144 组 descriptor 与 125 组使用 BigInt 对照的 packed 坐标边界。
+最终测试中，root 1,050 项与独立插件 323 项通过，七项 opt-in 测试跳过；修复专项有 88 项。null-name 规范化变更后 `pnpm verify` 通过，包含确定性构建、类型、文档、公开入口、publint/attw 和真实 Headless 激活。维护命令使包的实测展开大小为 1,290,228 字节，仍在既有 1,292,000 字节上限内；Host 和 Client bundle 代码保持原状。独立复审另检查了 144 组 descriptor 与 125 组使用 BigInt 对照的 packed 坐标边界。
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm exec vitest run tests/legacy-session-repair.spec.ts tests/lifecycle.spec.ts
 pnpm run verify
 node bin/repair-legacy-session.mjs --input tests/fixtures/issue-251-repairable-v0.jsonl
+node bin/repair-legacy-session.mjs --input tests/fixtures/issue-251-null-name-v0.jsonl
 MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --strategy-extensions
 ```
 
-WebUI 截图覆盖 Runtime summary 恢复及 summary/descriptor/packed 字符串占位值的组合制品；精确的 delta 时间保留另由真实已发布加载器与 stream 回放测试验证。未测试 Windows source build、外部真实 Provider 或生产会话。
+WebUI 截图覆盖 Runtime summary 恢复、summary/descriptor/packed 字符串占位值的组合制品，以及两种 null-name 形状；精确的 delta 时间保留另由真实已发布加载器与 stream 回放测试验证。未测试 Windows source build、外部真实 Provider 或生产会话。

@@ -72,9 +72,10 @@ dsh-mnemon-repair-session --input /backup/session.jsonl.zstd --output /backup/re
 | `dsh-mnemon` instructions summary 为 `Optional memory recall and remember reminder`；recall summary 为 `Memory View snapshot` 或 `Runtime memory snapshot` | 仅移除该 source 的 `summary` 成员，保留其他插件消息和陌生 summary。 |
 | 严格符合旧版封闭字段集合且组合参数满足冻结 v3 契约的 subagent descriptor v2 | 仅将版本值改为 3，保留 provider、成对模型字段、persona、label 和 toolFilter；不添加默认值或 reasoning effort。多余字段、不成对模型和其他不支持的版本会被拒绝。 |
 | 严格符合旧版结构、字符串 `id: ""` 或 `name: ""` 的 `tool-call-chunks` | 展开为原来的 raw delta 事件，保留 ID、name 是否存在、参数字符串、序号和时间戳。不丢弃 chunk，provenance 引用无需重编号。已经是 raw 的空字符串 delta 保持字节不变。 |
-| 流式 name 为 null，或完成 block、assistant 工具声明、tool/call、tool/result 中的 ID 为空 | 报告 blocker 并拒绝输出。缺失 ID 也可能被 provider 回放、hook 和外部 spill 制品引用；工具不生成替代身份。 |
+| 严格符合结构、自有成员为 `name: null` 的 raw 或 packed 工具 delta | 保留成员，将值改为 `""`；packed 行按原逻辑序号与时间展开。ID、参数和持久消息不变。两种值均不改变组装状态，保留成员可维持 token 计时。`normalizedToolChunkNames` 统计受影响的逻辑 delta 数。 |
+| 待修 delta 含未知结构或不安全坐标，或完成 block、assistant 工具声明、tool/call、tool/result 中的 ID 为空 | 报告 blocker 并拒绝输出。缺失 ID 也可能被 provider 回放、hook 和外部 spill 制品引用；工具不生成替代身份。 |
 
-工具只接受 v0、合法 UTF-8 JSON 记录和完整的普通 Zstandard 帧；原始输入、解压输入和展开输出均限制为 128 MiB。格式损坏、不完整帧、修改路径中的歧义重复键、无法安全表示的 packed 序号或时间会在发布输出前被拒绝。仅改写匹配的 summary/version 成员和需要展开的 packed 行，其他解压字节均保留。诊断统计每类已知 blocker 的全部次数，并最多列出十个行号/事件/字段路径样例，不输出消息正文。`migrationValidated: false` 明确表示扫描器不会修复其他损坏，也不保证任意会话都能迁移；最终仍以安装的官方 DSH 加载器和 stream 回放为准。参见 [issue #251 契约审计与验证](../../pr-assets/issue-251-legacy-repair/README.zh-CN.md)。
+工具只接受 v0、合法 UTF-8 JSON 记录和完整的普通 Zstandard 帧；原始输入、解压输入和展开输出均限制为 128 MiB。格式损坏、不完整帧、修改路径中的歧义重复键、无法安全表示的 delta 序号或时间会在发布输出前被拒绝。仅改写匹配的 summary/version/name 成员和需要展开的 packed 行，其他解压字节均保留。诊断统计每类已知 blocker 的全部次数，并最多列出十个行号/事件/字段路径样例，不输出消息正文。`migrationValidated: false` 明确表示扫描器不会修复其他损坏，也不保证任意会话都能迁移；最终仍以安装的官方 DSH 加载器和 stream 回放为准。参见 [issue #251 契约审计与验证](../../pr-assets/issue-251-legacy-repair/README.zh-CN.md)。
 
 DSH 以写权限打开旧会话时，会迁移为不可变的 v3 generation。Mnemon Runtime、档案与记忆空间维持原有格式。回滚 DSH 时，在独立旧版本 Profile 中恢复升级前会话备份；不要让旧 DSH 打开 v3 generation。参见[验证与截图](../../pr-assets/issue-223-dsh-015/README.zh-CN.md)。
 

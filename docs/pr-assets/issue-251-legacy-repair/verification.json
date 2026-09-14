@@ -61,34 +61,59 @@
       "path": "251-combined-cold-new-turn.jpg",
       "bytes": 50060,
       "sha256": "ce4b4beb4552830e5ddfdcdba0e028c9cebcbbff30b32a58c9646d3e1502be2c"
+    },
+    {
+      "path": "251-null-raw-before.jpg",
+      "bytes": 44913,
+      "sha256": "b1b584b67c48dde589b5a06f77cb1a20fde637c93fb26a666456731c11a28bf7"
+    },
+    {
+      "path": "251-null-raw-after.jpg",
+      "bytes": 40096,
+      "sha256": "90b4f73b57a555c15a58d691e0245a7ad53cbdf9aab346850da61da25525f926"
+    },
+    {
+      "path": "251-null-packed-before.jpg",
+      "bytes": 45481,
+      "sha256": "9a975d864b35ec81814915e30a9019306c1656704b7e0904aec4d3935b6a9c88"
+    },
+    {
+      "path": "251-null-packed-after.jpg",
+      "bytes": 39174,
+      "sha256": "1c23ad8259c03cb9d2ed3b5f003c8dc6f509c6214c459e5bb1ea55903221c339"
+    },
+    {
+      "path": "251-null-raw-cold-reopen.jpg",
+      "bytes": 61308,
+      "sha256": "d23fdec11b157e46c4da66d9746523aa39adc4bc5778b12544152182a7442f15"
+    },
+    {
+      "path": "251-null-packed-cold-reopen.jpg",
+      "bytes": 62199,
+      "sha256": "3b9660279b1475980a28f7be03b0dabff0925769758d2eb35e1d1761bc2afed6"
     }
   ],
   "limits": [
-    "WebUI screenshots cover Runtime and combined summary/descriptor/packed-string history recovery; exact timed delta preservation is additionally verified by released loader and replay tests.",
-    "Null names and empty durable tool identities are explicitly refused; not all issue251 variants are claimed repaired.",
+    "WebUI screenshots cover Runtime, combined summary/descriptor/packed-string history, and raw/packed null-name recovery; exact timed delta preservation is additionally verified by released loader and replay tests.",
+    "Unknown or unsafe affected delta shapes and empty durable tool identities are explicitly refused; not all issue251 variants are claimed repaired.",
     "Frozen v0 migration rc.1 and rc.2 artifacts are byte-identical; full execution used rc.1.",
     "No production Sessions, external model APIs, Windows source build or live third-party Provider was tested."
   ],
   "validation": {
     "fullVerifyPassed": true,
-    "finalDiagnosticAdjustmentRechecked": [
-      "typecheck",
-      "test:root",
-      "verify:package"
-    ],
-    "rootPassed": 1028,
+    "rootPassed": 1050,
     "rootSkipped": 5,
     "pluginPassed": 323,
     "pluginSkipped": 2,
-    "totalPassed": 1351,
+    "totalPassed": 1373,
     "totalSkipped": 7,
-    "repairPassed": 66,
+    "repairPassed": 88,
     "headlessTotalTools": 39,
     "headlessRepresentativeMnemonTools": 8,
     "deterministicBuildFiles": 39,
     "packageFiles": 47,
-    "packedBytes": 287106,
-    "unpackedBytes": 1288712,
+    "packedBytes": 287432,
+    "unpackedBytes": 1290228,
     "maximumUnpackedBytes": 1292000,
     "publicNodeEntries": 12,
     "publicTypeDependencies": 27,
@@ -96,7 +121,10 @@
     "independentAudit": {
       "descriptorCombinations": 144,
       "packedBigIntBoundaryCases": 125,
-      "remainingFindings": 0
+      "remainingFindings": 0,
+      "nullNameVariants": 5,
+      "nullNameComparedPrefixes": 36,
+      "oldAndCurrentStatsEquivalent": true
     }
   },
   "combinedWebui": {
@@ -144,5 +172,45 @@
       "externalModelCalls": 0,
       "hostRestartSignal": "SIGUSR2"
     }
+  },
+  "nullNameWebui": {
+    "results": [
+      {
+        "variant": "raw",
+        "originalSha256": "04890736fdc5e8d3c0e8331df219c3d7d625647165b4b0fbe5ec23a8bde06ded",
+        "repairedSha256": "90cd9f4e18ebad3db883c5c9b35a2ce7bedfe9d4c0487d14ee340083d9d52b8c",
+        "physicalV3Rows": 42,
+        "normalizedToolChunkNames": 3,
+        "firstDeltaHasOwnEmptyName": true,
+        "firstArgumentFragment": "",
+        "timedReplayMatchesNormalizedCopy": true,
+        "durableIdentityAndMessagesPreserved": true,
+        "continuedThroughRealWebUI": true,
+        "originalPreserved": true,
+        "coldReopenedThroughRealWebUI": true,
+        "coldWebUiBrowser": "Chrome",
+        "coldV3Sha256": "1f0c14019e06afde01a89c5ce806890f54ea5bb5b633d8ff5543e8a599f8e592",
+        "coldScreenshot": "251-null-raw-cold-reopen.jpg"
+      },
+      {
+        "variant": "packed",
+        "originalSha256": "af9c1c6eee90336df0a27e079d2dce9ac028d53f3ee002b9d7e79bbd9a5d306e",
+        "repairedSha256": "ff79820f088acffdba3a42b5bce2cdf5af5312a2539f20761a06881252cda20f",
+        "physicalV3Rows": 42,
+        "normalizedToolChunkNames": 3,
+        "firstDeltaHasOwnEmptyName": true,
+        "firstArgumentFragment": "",
+        "timedReplayMatchesNormalizedCopy": true,
+        "durableIdentityAndMessagesPreserved": true,
+        "continuedThroughRealWebUI": true,
+        "originalPreserved": true,
+        "coldReopenedThroughRealWebUI": true,
+        "coldWebUiBrowser": "Chrome",
+        "coldV3Sha256": "84c21218ae381cbf43641b4409b76f01f82b4f23d5e44037cdc3965ddc03077f",
+        "coldScreenshot": "251-null-packed-cold-reopen.jpg"
+      }
+    ],
+    "environmentNote": "After a DSH Host restart preserving the disposable profile, the in-app browser reported a client bundle load error before session selection. The exact bundle returned HTTP 200 and passed syntax checking. A separate Chrome test tab loaded the same Host normally; both migrated histories, tool output and prior continuation canaries were reopened there. No Host or browser security configuration was changed.",
+    "beforeCliRevision": "83d0c40fe7d9e62d60e283a56d1a0a63e31018db"
   }
 }
