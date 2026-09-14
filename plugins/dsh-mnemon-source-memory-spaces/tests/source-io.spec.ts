@@ -63,6 +63,24 @@ describe('Memory Spaces metadata IO through public Cordis plugins', () => {
       expect(changed.value).toMatchObject({ activeCount: 0, items: [{ name: 'Renamed elsewhere', active: false }] })
       const inactive = await first.runner.beginTurn({ scope })
       expect(inactive.view.readGrants[0]!.value).toMatchObject({ memoryBodyIds: [], knownMemoryBodyIds: [body.id] })
+      const grant = inactive.view.readGrants[0]!
+      const writeScope = { viewId: inactive.view.id, grant: { ...grant } }
+      expect((await first.client.read('body-directory', { writeScope })).value).toMatchObject({
+        writeScope: { viewId: inactive.view.id, sourceInstanceKey: 'source:spaces', memoryBodyIds: [body.id] },
+      })
+      expect((await first.client.read('body-directory', { writeScope: { ...writeScope,
+        grant: { ...grant, value: { memoryBodyIds: [body.id], knownMemoryBodyIds: [] } },
+      } })).value).toMatchObject({ writeScope: { memoryBodyIds: [] } })
+      expect((await first.client.read('body-directory', { writeScope: { ...writeScope,
+        grant: { ...grant, value: { memoryBodyIds: [body.id] } },
+      } })).value).toMatchObject({ writeScope: { memoryBodyIds: [body.id] } })
+      for (const invalid of [{ ...grant, sourceInstanceKey: 'source:foreign' }, { ...grant, schema: 'foreign-schema' }]) {
+        await expect(first.client.read('body-directory', { writeScope: { ...writeScope, grant: invalid } }))
+          .rejects.toThrow('write scope grant does not belong to this Source')
+      }
+      await expect(first.client.read('body-directory', { writeScope: { ...writeScope,
+        grant: { ...grant, value: { memoryBodyIds: [], knownMemoryBodyIds: [42] } },
+      } })).rejects.toThrow('knownMemoryBodyIds')
       inactive.release()
 
       await second.client.mutate('body-update', { memoryBodyId: body.id, active: true }, { confirmed: true })

@@ -68,6 +68,8 @@ Runtime entries display their creation time, newest first, across both targets a
 
 When Working Memory reaches capacity, the Host archives the exact original entries. If a routing batch fails or returns an invalid proposal, that entire batch uses the eligible default Memory Space (or the first eligible space when no default is available). Earlier valid batches keep their destinations, and the maintenance summary records the fallback reason. Caller cancellation still stops the operation.
 
+Spaces created by the current conversation View, or known spaces activated during that turn, can receive the archive once active and supported. Spaces created elsewhere after the turn began require a new turn. A destination failure explains the directory or scope restriction and leaves existing Runtime entries intact; the pending add has not been saved, so retry its original input after correcting the cause.
+
 Runtime items should be compact, independent, and repeatedly useful. Working Memory items can carry an optional branch scope (comma-separated git branch names in the add and edit forms): scoped items show a branch badge and are projected into the model context only while the session workspace is checked out on a listed branch; leaving the field empty keeps an item visible on every branch. The scope never affects this page or the on-disk `USER.md`/`MEMORY.md` projections. Identity, preferences, and explicit collaboration rules belong in User Profile. Project facts, environment, decisions, and tool lessons belong in Working Memory. Temporary progress and raw logs do not.
 
 ## 3. Documents: preserve complete project narratives

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { documentProtectionModel } from './fixtures/document-protection-model.mjs'
 import { documentArchiveModel } from './fixtures/document-archive-model.mjs'
 import { runtimeRoutingModel } from './fixtures/runtime-routing-model.mjs'
+import { runtimeWriteScopeModel } from './fixtures/runtime-write-scope-model.mjs'
 import { resultToolCacheModel } from './fixtures/result-tool-cache-model.mjs'
 import { reviewEvidenceModel, scopedOverviewPlugin } from './fixtures/review-evidence-model.mjs'
 
@@ -24,6 +25,7 @@ for (const flag of flags) {
   if (flag === '--review-failure') continue
   if (flag === '--runtime-archive') continue
   if (flag === '--runtime-routing') continue
+  if (flag === '--runtime-write-scope') continue
   if (flag === '--result-tool-cache') continue
   if (flag === '--review-evidence') continue
   if (flag.startsWith('--electron=')) {
@@ -71,6 +73,7 @@ if (archiveProvider) await new Promise(resolveListen => archiveProvider.listen(0
 const protectionModel = flags.has('--document-protection') ? documentProtectionModel(event => console.log('Document protection: ' + JSON.stringify(event))) : undefined
 const reviewModel = flags.has('--review-evidence') ? reviewEvidenceModel(event => console.log('Review evidence: ' + JSON.stringify(event))) : undefined
 const scriptedModel = flags.has('--runtime-routing') ? runtimeRoutingModel(event => console.log('Runtime routing: ' + JSON.stringify(event)))
+  : flags.has('--runtime-write-scope') ? runtimeWriteScopeModel(event => console.log('Runtime write scope: ' + JSON.stringify(event)))
   : flags.has('--result-tool-cache') ? resultToolCacheModel(event => console.log('Result tool cache: ' + JSON.stringify(event)))
   : flags.has('--document-archive') ? documentArchiveModel(event => console.log('Document archive: ' + JSON.stringify(event))) : reviewModel ?? protectionModel
 const reviewFailure = flags.has('--review-failure')
@@ -197,6 +200,7 @@ try {
     + (protectionModel === undefined && reviewModel === undefined && !reviewFailure ? '' : '- id: mnemon\n  config:\n    idleReviewMs: 5000\n')
     + (runtimeArchive ? '- id: mnemon\n  config:\n    persistenceStrategy:\n      mode: manual\n    runtimeMemory:\n      memoryLimitBytes: 300\n' : '')
     + (flags.has('--runtime-routing') ? '- id: mnemon\n  config:\n    runtimeMemory:\n      memoryLimitBytes: 1600\n' : '')
+    + (flags.has('--runtime-write-scope') ? '- id: mnemon\n  config:\n    persistenceStrategy:\n      mode: manual\n      providerId: mnemon-native\n    runtimeMemory:\n      memoryLimitBytes: 512\n' : '')
     + (reviewModel === undefined ? '' : '- insert:\n    - id: review-evidence-fixture\n      name: ' + JSON.stringify(reviewFixture) + '\n')
     + (extensionsEnabled ? extensionNames.map(name => `- id: ${name.slice(4)}\n  disabled: false\n`).join('') : ''))
   await writeFile(join(workspace, 'README.md'), '# Mnemon isolated browser test\n\nNo production memory or credentials are used.\n')

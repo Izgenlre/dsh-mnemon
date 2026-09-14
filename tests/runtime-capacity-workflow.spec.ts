@@ -2,12 +2,17 @@ import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as scoped from 'dsh-mnemon-strategy-scoped'
+import * as lightContext from 'dsh-mnemon-strategy-light-context'
+import * as autoCapture from 'dsh-mnemon-strategy-auto-capture'
 import * as runtimePlugin from 'dsh-mnemon-source-runtime'
+import { installMemorySpaces } from 'dsh-mnemon-source-memory-spaces'
+import holographic from 'dsh-mnemon-provider-holographic'
 import { DEFAULT_THREE_TIER_VIEW_STRATEGY } from 'dsh-mnemon-strategy-default-three-tier'
 import { defineMemoryStrategy, installMemory } from '../src/sdk/index.ts'
 import type { RuntimeMemorySnapshot } from 'dsh-mnemon-source-runtime/contracts'
 import type { HostAgent, HostContextShape, HostSubagentsService, HostWorkspace, ToolDefinition } from '../src/host/dsh.ts'
 import type { MnemonLifecycle } from '../src/host/lifecycle.ts'
+import type { Config } from '../src/host/config.ts'
 import { agentScope, createRuntimeGraph } from '../src/host/runtime.ts'
 import { MnemonSubagentCoordinator, type RuntimeMaintenanceTaskRunner } from '../src/host/subagent.ts'
 import { registerTools } from '../src/host/tools.ts'
@@ -21,8 +26,8 @@ const pending = 'Pending durable fact. '.repeat(15).trim()
 const fixtures: Awaited<ReturnType<typeof compositionFixture>>[] = []
 afterEach(async () => { for (const f of fixtures.splice(0)) await f.dispose() })
 
-async function fixture(taskRunner?: RuntimeMaintenanceTaskRunner) {
-  const f = await compositionFixture({ runtimeMemory: { memoryLimitBytes: 512, userLimitBytes: 512 } })
+async function fixture(taskRunner?: RuntimeMaintenanceTaskRunner, config: Config = {}) {
+  const f = await compositionFixture({ runtimeMemory: { memoryLimitBytes: 512, userLimitBytes: 512 }, ...config })
   fixtures.push(f)
   await f.memorySpace()
   await f.graph.source('runtime').mutate('mutate', { action: 'add', target: 'memory', content: saved })
@@ -51,6 +56,199 @@ async function fixture(taskRunner?: RuntimeMaintenanceTaskRunner) {
 }
 
 describe('default Runtime capacity workflow across Host entry points', () => {
+  it.each(['root', 'child', 'enhanced-root', 'enhanced-child'] as const)('archives into a known namespace activated after the %s View was pinned (issue 250)', async caller => {
+    const f = await fixture()
+    if (caller.startsWith('enhanced-')) {
+      await f.mount(scoped, { instanceId: 'scoped' })
+      await f.mount(lightContext, { instanceId: 'light-context' })
+      await f.mount(autoCapture, { instanceId: 'auto-capture' })
+    }
+    const spaces = f.graph.source('memory-spaces')
+    const body = await f.memorySpace()
+    await spaces.mutate('body-update', { memoryBodyId: body.id, active: false })
+    const turn = await f.begin()
+    expect(turn.view.readGrants.find(grant => grant.sourceInstanceKey === spacesKey)!.value)
+      .toMatchObject({ memoryBodyIds: [], knownMemoryBodyIds: [body.id] })
+    const offerId = turn.view.actionOffers.find(offer => offer.sourceInstanceKey === spacesKey && offer.sourceActionId === 'manage-spaces')!.id
+    const agent = caller.endsWith('root') ? f.root : f.child
+    await f.execute('mnemon_view_action', { offerId, input: { operation: 'update', memoryBodyId: body.id, active: true } }, agent)
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }, agent))
+      .resolves.toMatchObject({ added: pending, maintenance: { memoryBodyIds: [body.id] } })
+    expect((await f.graph.source('runtime').read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([pending])
+    expect(await spaces.read('search', { query: 'Saved durable fact' })).toMatchObject({ results: [expect.objectContaining({ content: saved })] })
+    expect(f.start).not.toHaveBeenCalled()
+  })
+
+  it('archives into a namespace created and activated by its own View (issue 250)', async () => {
+    const f = await fixture(undefined, { persistenceStrategy: { mode: 'manual', providerId: 'holographic' } })
+    const spaces = f.graph.source('memory-spaces')
+    const original = await f.memorySpace()
+    await spaces.mutate('body-update', { memoryBodyId: original.id, active: false })
+    const turn = await f.begin()
+    const offerId = turn.view.actionOffers.find(offer => offer.sourceInstanceKey === spacesKey && offer.sourceActionId === 'manage-spaces')!.id
+    const created = await f.execute('mnemon_view_action', { offerId, input: {
+      operation: 'create', request: { name: 'Own View archive', description: 'Synthetic same-View archive destination.' },
+    } }) as { details: { memoryBodyId: string } }
+    await f.execute('mnemon_view_action', { offerId, input: { operation: 'update', memoryBodyId: created.details.memoryBodyId, active: true } })
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }))
+      .resolves.toMatchObject({ added: pending, maintenance: { memoryBodyIds: [created.details.memoryBodyId] } })
+    expect(f.start).not.toHaveBeenCalled()
+  })
+
+  it('retains an overflowing write for retry when only a foreign-created namespace is active (issue 250)', async () => {
+    const f = await fixture()
+    const spaces = f.graph.source('memory-spaces')
+    const original = await f.memorySpace()
+    await spaces.mutate('body-update', { memoryBodyId: original.id, active: false })
+    await f.begin()
+    await spaces.mutate('body-create', { name: 'Foreign View archive', description: 'Synthetic foreign namespace.', providerId: 'holographic', active: true })
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }))
+      .rejects.toThrow('current View write scope')
+    expect((await f.graph.source('runtime').read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([saved])
+    expect(await spaces.read('search', { query: 'Saved durable fact' })).toMatchObject({ results: [] })
+    f.graph.composableTurns.endTurn(f.root.id + ':1')
+    f.graph.composableTurns.endTurn(f.child.id + ':1')
+    await f.begin()
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending })).resolves.toMatchObject({ added: pending })
+  })
+
+  it.each([true, false])('keeps conservative compatibility with a Source that omits writeScope: active at pin=%s', async active => {
+    const f = await fixture()
+    const spaces = f.graph.source('memory-spaces')
+    const body = await f.memorySpace()
+    if (!active) await spaces.mutate('body-update', { memoryBodyId: body.id, active: false })
+    await f.begin()
+    if (!active) await spaces.mutate('body-update', { memoryBodyId: body.id, active: true })
+    const source = f.graph.memoryComposition.current()!.sourceRuntime(spacesKey)!
+    const manage = source.manage!.bind(source)
+    vi.spyOn(source as { manage: NonNullable<typeof source.manage> }, 'manage').mockImplementation(request => manage(
+      request.operation === 'body-directory' ? { ...request, input: null } : request,
+    ))
+    const result = f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending })
+    if (active) await expect(result).resolves.toMatchObject({ added: pending })
+    else {
+      await expect(result).rejects.toThrow('current View write scope is empty')
+      expect((await f.graph.source('runtime').read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([saved])
+    }
+  })
+
+  it.each(['empty', 'revoked', 'null', 'foreign-view', 'foreign-source', 'malformed-ids'] as const)('rejects %s Source write authority before archive side effects', async fault => {
+    const f = await fixture()
+    await f.begin()
+    const source = f.graph.memoryComposition.current()!.sourceRuntime(spacesKey)!
+    const manage = source.manage!.bind(source)
+    let reads = 0
+    const mutations: string[] = []
+    vi.spyOn(source as { manage: NonNullable<typeof source.manage> }, 'manage').mockImplementation(async request => {
+      if (request.mode === 'mutate') mutations.push(request.operation)
+      const result = await manage(request)
+      if (request.operation === 'body-directory') {
+        reads++
+        const value = result.value as unknown as { writeScope: Record<string, unknown> | null }
+        if (fault === 'empty' || fault === 'revoked' && reads > 1) value.writeScope!.memoryBodyIds = []
+        if (fault === 'null') value.writeScope = null
+        if (fault === 'foreign-view') value.writeScope!.viewId = 'foreign-view'
+        if (fault === 'foreign-source') value.writeScope!.sourceInstanceKey = 'source:foreign'
+        if (fault === 'malformed-ids') value.writeScope!.memoryBodyIds = [42]
+      }
+      return result
+    })
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }))
+      .rejects.toThrow(fault === 'empty' ? 'current View write scope is empty' : fault === 'revoked' ? 'no longer eligible' : 'invalid Memory Spaces write scope')
+    expect(mutations).toEqual([])
+    expect((await f.graph.source('runtime').read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([saved])
+  })
+
+  it('keeps explicitly attenuated namespace grants empty despite an active catalog', async () => {
+    const f = await fixture()
+    const source = f.graph.memoryComposition.current()!.sourceRuntime(spacesKey)!
+    const project = source.project!.bind(source)
+    vi.spyOn(source as { project: NonNullable<typeof source.project> }, 'project').mockImplementation(async request => {
+      const result = await project(request)
+      return { ...result, readGrant: { ...result.readGrant!, value: { memoryBodyIds: [], knownMemoryBodyIds: [] } } }
+    })
+    await f.begin()
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }))
+      .rejects.toThrow('current View write scope is empty')
+    expect((await f.graph.source('runtime').read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([saved])
+  })
+
+  it.each(['cancel', 'ended-turn', 'unload'] as const)('keeps the initiating View lease when %s occurs during write-scope resolution', async change => {
+    const f = await fixture()
+    await f.begin()
+    const source = f.graph.memoryComposition.current()!.sourceRuntime(spacesKey)!
+    const manage = source.manage!.bind(source)
+    let started!: () => void
+    let release!: () => void
+    const begun = new Promise<void>(resolve => { started = resolve })
+    const held = new Promise<void>(resolve => { release = resolve })
+    let first = true
+    vi.spyOn(source as { manage: NonNullable<typeof source.manage> }, 'manage').mockImplementation(async request => {
+      const result = await manage(request)
+      if (request.operation === 'body-directory' && first) { first = false; started(); await held }
+      return result
+    })
+    const controller = new AbortController()
+    const operation = f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }, f.root, controller.signal)
+    await begun
+    if (change === 'cancel') controller.abort()
+    else if (change === 'ended-turn') f.graph.composableTurns.endTurn(f.root.id + ':1')
+    else await f.releases[2]!()
+    release()
+    if (change === 'unload') await expect(operation).resolves.toMatchObject({ added: pending })
+    else {
+      await expect(operation).rejects.toThrow(change === 'cancel' ? /abort/i : 'ended turn')
+      expect((await f.graph.source('runtime').read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([saved])
+    }
+  })
+
+  it('gets write authority from the exact selected Memory Spaces instance', async () => {
+    const f = await fixture()
+    const otherKey = 'source:other-spaces'
+    await f.mount({ inject: ['mnemonMemory'], apply: ctx => installMemorySpaces(ctx, [
+      { instanceId: holographic.id, module: holographic, config: undefined },
+    ], { config: { dataDir: join(f.fixtureRoot, 'other-spaces') } }) }, { instanceId: 'other-spaces' })
+    await f.mount(scoped, { instanceId: 'scoped', config: { sourceKeys: [runtimeKey, otherKey] } })
+    const other = f.graph.source('memory-spaces').forInstance(otherKey)
+    await other.mutate('provider-service-update', { providerId: 'holographic', enabled: true, settings: { dataPath: join(f.fixtureRoot, 'other-facts.json') } })
+    await f.begin()
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }))
+      .resolves.toMatchObject({ added: pending })
+    expect(await other.read('search', { query: 'Saved durable fact' })).toMatchObject({ results: [expect.objectContaining({ content: saved })] })
+    expect(await f.graph.source('memory-spaces').read('search', { query: 'Saved durable fact' })).toMatchObject({ results: [] })
+  })
+
+  it.skipIf(!process.env.MNEMON_NATIVE_TEST_CLI)('archives exact checkpoints to two same-View Native namespaces through real Host tools', async () => {
+    const routes: Array<{ sourceIndexes: number[]; memoryBodyId: string }> = []
+    const f = await fixture(async () => ({ provider: 'fixture', runId: 'native-write-scope', result: {
+      output: [], stopReason: 'completed', structured: { action: 'planned', summary: 'Split synthetic checkpoints.', routes },
+    } }), { cliPath: process.env.MNEMON_NATIVE_TEST_CLI! })
+    const spaces = f.graph.source('memory-spaces')
+    await spaces.mutate('provider-service-update', { providerId: 'holographic', enabled: false, settings: {} })
+    const runtime = f.graph.source('runtime')
+    await runtime.mutate('mutate', { action: 'remove', target: 'memory', oldText: saved })
+    const checkpoints = ['Issue250 architecture checkpoint. '.repeat(6).trim(), 'Issue250 release checkpoint. '.repeat(6).trim()]
+    for (const content of checkpoints) await runtime.mutate('mutate', { action: 'add', target: 'memory', content })
+    const turn = await f.begin()
+    expect(turn.view.readGrants.find(grant => grant.sourceInstanceKey === spacesKey)!.value).toMatchObject({ memoryBodyIds: [], knownMemoryBodyIds: [] })
+    const offerId = turn.view.actionOffers.find(offer => offer.sourceInstanceKey === spacesKey && offer.sourceActionId === 'manage-spaces')!.id
+    for (const index of [0, 1]) {
+      const created = await f.execute('mnemon_view_action', { offerId, input: { operation: 'create', request: {
+        name: `Native checkpoint ${index}`, description: 'Disposable issue 250 integration destination.',
+      } } }) as { details: { memoryBodyId: string } }
+      const memoryBodyId = created.details.memoryBodyId
+      await f.execute('mnemon_view_action', { offerId, input: { operation: 'update', memoryBodyId, active: true } })
+      routes.push({ sourceIndexes: [index + 1], memoryBodyId })
+    }
+    await expect(f.execute('mnemon_runtime_memory', { action: 'add', target: 'memory', content: pending }))
+      .resolves.toMatchObject({ added: pending, maintenance: { memoryBodyIds: routes.map(route => route.memoryBodyId) } })
+    expect((await runtime.read<RuntimeMemorySnapshot>('snapshot')).entries.map(entry => entry.content)).toEqual([pending])
+    for (const [index, route] of routes.entries()) {
+      expect(await spaces.read('list', { memoryBodyIds: [route.memoryBodyId], limit: 10 }))
+        .toMatchObject({ items: [expect.objectContaining({ content: checkpoints[index], memoryBodyId: route.memoryBodyId })] })
+    }
+  }, 30_000)
+
   it.each(['root-tool', 'child-tool', 'root-action', 'child-action', 'web-runtime', 'web-management', 'web-assistance'] as const)(
     'archives before committing an overflowing %s write without a model', async entry => {
       const f = await fixture()

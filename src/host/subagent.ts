@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { HostAgent, HostSubagentResult, HostSubagentRun, HostSubagentsService, ToolDefinition, ToolExecution } from "./dsh.ts"
 import type { DocumentCapacityPlan, DocumentMutation, DocumentMutationResult, DocumentRecord, DocumentSearchResult, DocumentSnapshot, DocumentView } from 'dsh-mnemon-source-documents/contracts'
 import { RUNTIME_ENTRY_DELIMITER, type RuntimeMemoryCompactedEntry, type RuntimeMemoryMaintenancePlan, type RuntimeMemoryMutation, type RuntimeMemoryMutationResult } from 'dsh-mnemon-source-runtime/contracts'
-import type { EdgeType, Insight, MemoryBodyCatalog as MemorySpaceCatalog, MemoryBodyMetadataSample as MemorySpaceMetadataSample, PreparedMemoryPlacement, RememberRequest, SearchRequest } from 'dsh-mnemon-source-memory-spaces/contracts'
+import type { EdgeType, Insight, MemoryBodyCatalog as MemorySpaceCatalog, MemoryBodyMetadataSample as MemorySpaceMetadataSample, MemorySpaceWriteScopeRequest, PreparedMemoryPlacement, RememberRequest, SearchRequest } from 'dsh-mnemon-source-memory-spaces/contracts'
 import { mutationResultCommitted } from './receipts.ts'
 import { SourceSession, sourceFailure } from './source-session.ts'
 import { threeTierActionWorkflow } from 'dsh-mnemon-strategy-default-three-tier/extension-sdk'
@@ -22,7 +22,7 @@ type AgentRuntimeSource = MnemonAgentRuntimeSource
 
 type RuntimeModelResult = { provider: string; runId: string; result: HostSubagentResult }
 export type RuntimeMaintenanceTaskRunner = (scope: MemoryOperationScope, signal: AbortSignal, operation: (agent: HostAgent) => Promise<RuntimeModelResult>) => Promise<RuntimeModelResult>
-type RuntimeArchiveScope = { source: SourceSession; cleanup: SourceSession; memoryBodyIds?: ReadonlySet<string> }
+type RuntimeArchiveScope = { source: SourceSession; cleanup: SourceSession; memoryBodyIds?: ReadonlySet<string>; writeScope?: MemorySpaceWriteScopeRequest }
 
 interface RuntimeWriteContext {
   runtime: SourceSession
@@ -1090,7 +1090,7 @@ export class MnemonSubagentCoordinator {
     if (turn !== undefined) source = source.forTurn(turn)
     const grant = view.readGrants.find(grant => grant.sourceInstanceKey === candidates[0]!.sourceInstanceKey && grant.schema === 'dsh-mnemon.memory-spaces/v1')
     if (grant === undefined) throw new Error('Runtime archival requires the selected Memory Spaces namespace scope')
-    return { source, cleanup, memoryBodyIds: new Set(strings(object(grant.value).memoryBodyIds)) }
+    return { source, cleanup, memoryBodyIds: new Set(strings(object(grant.value).memoryBodyIds)), writeScope: { viewId: view.id, grant } }
   }
 
   private runtimeModel(scope: MemoryOperationScope, parent: HostAgent | undefined, signal: AbortSignal, operation: 'migration' | 'compaction', label: string, prompt: string, schema: Record<string, unknown>, persona: string): Promise<RuntimeModelResult> {
@@ -1339,17 +1339,42 @@ ${naturalRequest(request)}`
 
     const archive = await context.memorySpaces()
     const memoryService = archive.source
+    let allowed = archive.memoryBodyIds
+    const readDirectory = async () => {
+      const catalog = await memoryService.read<MemorySpaceCatalog>('body-directory', archive.writeScope === undefined ? null : { writeScope: archive.writeScope }, signal)
+      allowed = archive.memoryBodyIds
+      if (catalog.writeScope !== undefined) {
+        const scope = catalog.writeScope
+        if (archive.writeScope === undefined || scope === null || scope.viewId !== archive.writeScope.viewId
+          || scope.sourceInstanceKey !== archive.writeScope.grant.sourceInstanceKey
+          || !Array.isArray(scope.memoryBodyIds) || scope.memoryBodyIds.length > 10_000
+          || scope.memoryBodyIds.some(id => typeof id !== 'string' || id.trim() === '' || id !== id.trim())) {
+          throw new Error('Runtime archival received an invalid Memory Spaces write scope; pending write was not committed; retry the same request in a new turn')
+        }
+        allowed = new Set(scope.memoryBodyIds)
+      }
+      return catalog
+    }
+    const catalog = await readDirectory()
+    // A Source that predates writeScope retains the narrower pinned read namespace.
+    // An empty scope always denies every destination; never replace it with the live catalog.
     const writable = (body: MemorySpaceCatalog['items'][number]) => (
       body.active && body.providerEnabled !== false && body.provider.capabilities.remember === true
-      && (archive.memoryBodyIds === undefined || archive.memoryBodyIds.has(body.id))
+      && (allowed === undefined || allowed.has(body.id))
     )
     const eligible = (body: MemorySpaceCatalog['items'][number]) => writable(body)
       && body.provider.capabilities.writeMode === 'exact' && body.provider.capabilities.forget === true
-    const catalog = await memoryService.read<MemorySpaceCatalog>('body-directory', null, signal)
     const eligibleBodies = catalog.items.filter(eligible)
     if (eligibleBodies.length === 0) {
-      const unsupported = catalog.items.filter(writable).map(body => `${body.id} (provider=${body.provider.id}, writeMode=${body.provider.capabilities.writeMode}, forget=${body.provider.capabilities.forget})`).join(', ')
-      throw new Error(`runtime memory archival requires an existing active writable Memory Space with exact writes and safe forget; activate a supported Memory Space or increase runtimeMemory.memoryLimitBytes${unsupported === '' ? '' : `; unsupported destinations: ${unsupported}`}`)
+      const writableBodies = catalog.items.filter(writable)
+      const unsupported = writableBodies.map(body => `${body.id} (provider=${body.provider.id}, writeMode=${body.provider.capabilities.writeMode}, forget=${body.provider.capabilities.forget})`).join(', ')
+      const reason = catalog.items.length === 0 ? 'Memory Space body-directory is empty'
+        : allowed?.size === 0 ? 'current View write scope is empty'
+        : allowed !== undefined && catalog.items.some(body => body.active && body.providerEnabled !== false && body.provider.capabilities.remember && !allowed?.has(body.id)) && writableBodies.length === 0
+          ? 'current View write scope excludes the active writable Memory Spaces'
+          : writableBodies.length === 0 ? 'no active writable Memory Space in the authorized scope' : 'authorized destinations lack exact writes or safe forget'
+      const scope = archive.writeScope === undefined ? 'management' : `${archive.writeScope.grant.sourceInstanceKey}/${catalog.writeScope === undefined ? 'pinned-read' : 'source-write'}`
+      throw new Error(`runtime memory archival requires an existing active writable Memory Space with exact writes and safe forget; ${reason}; scope=${scope}, catalog=${catalog.items.length}, authorized=${allowed?.size ?? 'management'}, writable=${writableBodies.length}; pending write was not committed and existing runtime entries are unchanged; retry the same request in a new turn after activating a supported authorized Memory Space, or increase runtimeMemory.memoryLimitBytes${unsupported === '' ? '' : `; unsupported destinations: ${unsupported}`}`)
     }
     const eligibleById = new Map(eligibleBodies.map(body => [body.id, body]))
     const budget = compactedBudget(plan)
@@ -1435,7 +1460,7 @@ ${chunk.context}
     // an external data plane cannot share the local filesystem lock.
     const current = await runtimeMemory.read<RuntimeMemoryMaintenancePlan>('maintenance-plan', request, signal)
     if (current.revision !== plan.revision) throw new Error('runtime memory changed while archival was running; no archive writes were attempted')
-    const destinations = await memoryService.read<MemorySpaceCatalog>('body-directory', null, signal)
+    const destinations = await readDirectory()
     for (const memoryBodyId of new Set(routed.values())) {
       if (!destinations.items.some(body => body.id === memoryBodyId && eligible(body))) {
         throw new Error(`runtime archive Memory Space ${memoryBodyId} is no longer eligible; no archive writes were attempted`)
@@ -1466,6 +1491,9 @@ ${chunk.context}
       for (const memoryBodyId of new Set(routed.values())) {
         signal.throwIfAborted()
         context.assertWritable?.()
+        if (archive.writeScope !== undefined && !(await readDirectory()).items.some(body => body.id === memoryBodyId && eligible(body))) {
+          throw new Error(`runtime archive Memory Space ${memoryBodyId} is no longer authorized or eligible; pending write was not committed`)
+        }
         const batch = sources.filter(source => routed.get(source.index) === memoryBodyId)
         const written = await memoryService.mutate<unknown[]>('remember-many', { requests: batch.map(source => requests[source.index - 1]!) }, signal)
         for (const [offset, result] of written.entries()) {

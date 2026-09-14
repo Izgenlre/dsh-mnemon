@@ -5,6 +5,7 @@
  * and persisted Document/Pack lineage; they all refer to memory spaces.
  */
 export type { MemoryJsonValue as JsonValue } from 'dsh-mnemon/contracts'
+import type { MemoryReadGrant } from 'dsh-mnemon/contracts'
 
 export type MemoryProviderId = string
 
@@ -330,6 +331,19 @@ export interface MemorySpaceView extends MemorySpace {
   stats?: MemorySpaceStats
 }
 
+/** Optional Host-only body-directory input; the Host binds the grant to its initiating View and exact Source. */
+export interface MemorySpaceWriteScopeRequest {
+  viewId: string
+  grant: MemoryReadGrant
+}
+
+/** Source-owned write authority, distinct from the active namespaces pinned for recall. */
+export interface MemorySpaceWriteScope {
+  viewId: string
+  sourceInstanceKey: string
+  memoryBodyIds: string[]
+}
+
 export interface MemorySpaceCatalog {
   items: MemorySpaceView[]
   providers: MemoryProviderDescriptor[]
@@ -339,6 +353,8 @@ export interface MemorySpaceCatalog {
   activeCount: number
   directory: string
   generatedAt: string
+  /** Present only when body-directory receives a supported writeScope request. Older Sources omit it. */
+  writeScope?: MemorySpaceWriteScope
 }
 
 export interface MemoryGraphNode extends Insight {
