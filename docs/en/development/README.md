@@ -70,9 +70,12 @@ Remote Provider suites use controlled HTTP responses; Native process suites use 
 
 ```sh
 MNEMON_NATIVE_TEST_CLI=/absolute/path/to/mnemon pnpm --filter dsh-mnemon-source-memory-spaces exec vitest run tests/native-integration.spec.ts
+MNEMON_NATIVE_TEST_CLI=/absolute/path/to/mnemon pnpm exec vitest run tests/runtime-capacity-workflow.spec.ts -t 'two same-View Native'
 ```
 
 The test never discovers a personal data root or installs a binary. These checks do not certify every live external service or every account configuration. Provider Lab is an explicit separate integration environment.
+
+The Runtime case creates and activates two Native spaces through real Host tools after the View is pinned, archives two exact checkpoints and verifies the pending add. Routing decisions are fixed locally; no model API is used.
 
 The opt-in Flash pressure suite uses four real DSH sessions, delegated writers, independent maintenance tasks and a disposable Native store. It keeps the default 10 KiB limit and verifies exact committed content across repeated archival, namespace routing and session-free browser management. Supply a DeepSeek credential through `DEEPSEEK_API_KEY` and a verified CLI through `MNEMON_NATIVE_TEST_CLI`, then run:
 
@@ -124,6 +127,8 @@ The [2026-08-30 npm regression record](../../pr-assets/npm-sidebar-cli/README.md
 The previous DSH 0.1.1-rc.2 line does not fully unload every Client module on bundle changes. Refresh after Client package/locale registration changes when exercising that rollback target; ordinary Mnemon settings still apply live. Separate upstream profile/transport warnings from Mnemon failures rather than hiding the console.
 
 For the Documents archive regression, use `pnpm e2e:serve --document-archive`. Create and activate a disposable exact-write Memory Space, create a document and archive it from the workbench. A title containing `REJECT` deliberately proposes an invalid destination; verify that the document stays active and no index appears. Rename it and retry. Send `archive-tool-222 prepare`, `archive-tool-222 update`, and `archive-tool-222` in separate Mnemon E2E conversation turns to drive real create → update → archive tools and assert the returned lineage. Only model decisions are scripted; storage, tools, transport and the browser remain real. The same fixture can reproduce the legacy receipt-index mismatch when used with the old Host build.
+
+For Runtime write-scope regression, use `MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --runtime-write-scope --strategy-extensions` in a fresh disposable fixture. Send `archive-scope-250` in Mnemon E2E. The scripted model saves two checkpoints, creates and activates two real Native spaces within the pinned View, then adds an overflowing checkpoint. The baseline rejects this add despite the active spaces; the fixed Host archives the originals to both authorized destinations and commits the add. `archive-scope-250 retry` retries the same pending input in a new turn. The fixture bounds child calls and requires real create/update receipts before completing them.
 
 ## Optional DSH source overlay
 

@@ -356,6 +356,13 @@ export function createMemorySpacesSource(providerSnapshot: MemorySpaceProviderSn
     }
     const admittedByView = new Map<string, Map<string, string>>()
     const createdByView = new Map<string, Set<string>>()
+    const writeBodies = (viewId: string, grant: MemoryReadGrant): string[] => {
+      if (grant.sourceInstanceKey !== context.sourceInstanceKey || grant.schema !== 'dsh-mnemon.memory-spaces/v1') {
+        throw new Error('Memory Spaces write scope grant does not belong to this Source')
+      }
+      const known = stringArray(record(grant.value, 'Memory Spaces scope').knownMemoryBodyIds, 'knownMemoryBodyIds', 10_000) ?? grantIds(grant)
+      return [...new Set([...known, ...(createdByView.get(viewId) ?? [])])]
+    }
     const admit = (viewId: string, entries: Array<{ id: string; memoryBodyId?: string }>): void => {
       const current = admittedByView.get(viewId) ?? new Map<string, string>()
       for (const entry of entries) if (entry.memoryBodyId !== undefined) current.set(entry.memoryBodyId + '/' + entry.id, entry.memoryBodyId)
@@ -525,9 +532,8 @@ export function createMemorySpacesSource(providerSnapshot: MemorySpaceProviderSn
         const grant = request.grant
         if (grant === undefined) throw new Error('Memory Spaces action has no View ReadGrant')
         const allowedBodies = grantIds(grant)
-        const knownBodies = stringArray(record(grant.value, 'Memory Spaces scope').knownMemoryBodyIds, 'knownMemoryBodyIds', 10_000) ?? allowedBodies
         const created = createdByView.get(request.view.id) ?? new Set<string>()
-        const writeBodies = [...new Set([...knownBodies, ...created])]
+        const writableBodies = writeBodies(request.view.id, grant)
         const admittedOwner = (id: string): string | undefined => {
           const requestedSpace = text(input.memoryBodyId, 'memoryBodyId', 300, false)
           const entries = admittedByView.get(request.view.id)
@@ -550,7 +556,7 @@ export function createMemorySpacesSource(providerSnapshot: MemorySpaceProviderSn
             result = { action: 'created', memoryBodyId: body.id, name: body.name, description: body.description }
           } else if (input.operation === 'update') {
             bodyId = text(input.memoryBodyId, 'memoryBodyId', 300)!
-            if (!writeBodies.includes(bodyId)) throw new Error('Memory Space update is outside this View scope')
+            if (!writableBodies.includes(bodyId)) throw new Error('Memory Space update is outside this View scope')
             const body = service.updateSpace(bodyId, {
               ...(input.name === undefined ? {} : { name: text(input.name, 'name', 100)! }),
               ...(input.description === undefined ? {} : { description: text(input.description, 'description', 1_000)! }),
@@ -560,7 +566,7 @@ export function createMemorySpacesSource(providerSnapshot: MemorySpaceProviderSn
           } else if (input.operation === 'merge') {
             const target = text(input.targetMemoryBodyId, 'targetMemoryBodyId', 300)!
             const sources = stringArray(input.sourceMemoryBodyIds, 'sourceMemoryBodyIds', 20) ?? []
-            if ([target, ...sources].some(id => !writeBodies.includes(id))) throw new Error('Memory Space merge is outside this View scope')
+            if ([target, ...sources].some(id => !writableBodies.includes(id))) throw new Error('Memory Space merge is outside this View scope')
             bodyId = target
             result = await service.mergeSpaces(target, sources, input.deactivateSources !== false, request.signal) as unknown as MemoryJsonValue
           } else throw new Error('unsupported Memory Space management action')
@@ -571,7 +577,7 @@ export function createMemorySpacesSource(providerSnapshot: MemorySpaceProviderSn
             if (defaults.length !== 1) throw new Error('remember requires an explicit Memory Space in this View scope')
             bodyId = defaults[0]!
           }
-          if (!writeBodies.includes(bodyId)) throw new Error('remember destination is outside this View scope')
+          if (!writableBodies.includes(bodyId)) throw new Error('remember destination is outside this View scope')
           const category = text(input.category, 'category', 30, false) as Category | undefined
           const source = text(input.source, 'source', 30, false) as Source | undefined
           if (category !== undefined && !CATEGORIES.has(category)) throw new Error(`unsupported category: ${category}`)
@@ -608,6 +614,18 @@ export function createMemorySpacesSource(providerSnapshot: MemorySpaceProviderSn
         return receipt(request.view.id, request.offer.id, context.sourceInstanceKey, service.memoryRevision(), { memoryBodyId: bodyId ?? null, result }, mutationResultCompletion(result))
       },
       manage(request) {
+        if (request.mode === 'read' && request.operation === 'body-directory' && request.input !== null) {
+          const input = record(request.input, 'Memory Spaces body-directory')
+          if (input.writeScope !== undefined) {
+            if (!service.config.writeEnabled) throw new Error('Memory Spaces is configured read-only')
+            const scope = record(input.writeScope, 'Memory Spaces write scope')
+            const viewId = text(scope.viewId, 'write scope viewId', 300)!
+            const grant = record(scope.grant ?? null, 'Memory Spaces write scope grant') as unknown as MemoryReadGrant
+            return managementResult(service, { ...service.spaceDirectory(), writeScope: {
+              viewId, sourceInstanceKey: context.sourceInstanceKey, memoryBodyIds: writeBodies(viewId, grant),
+            } })
+          }
+        }
         return manageMemorySpaces(service, request)
       },
       async dispose() {
