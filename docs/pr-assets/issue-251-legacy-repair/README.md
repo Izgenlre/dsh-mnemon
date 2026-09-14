@@ -16,6 +16,12 @@ The updated CLI reported three repairs. The original historical user request and
 |---|---|
 | ![Historical summary refusal](./251-before-runtime-summary.jpg) | ![Both conversation turns retained](./251-after-cold-reopen.jpg) |
 
+A second WebUI artifact uses the [combined fixture](../../../tests/fixtures/issue-251-repairable-v0.jsonl): all three summaries, a compatible v2 descriptor and a packed row with empty string ID/name. The old repair still failed at Runtime summary 7. The updated CLI reported three summary repairs, one descriptor promotion and one packed row expanded into three chunks, with no blockers. The actual DSH loader migrated the copy, and the UI displayed the historical user request, assistant answer and expanded `synthetic_lookup {}` call with `Synthetic tool response.` Selecting the configured loopback `DeepSeek-V4-Flash` route restored the interactive composer. The preserved original hash is `94f7da957d213c896c4794603580c9e982670bcd725ecffeee241eab3ad709e5`; the repaired copy is `07db52eaacf6d45fc2d4c0a2e8931604674ce332c3a0f823aeed4d4aacaeed3b`.
+
+| Combined artifact before repair | After migration and tool-history rendering |
+|---|---|
+| ![Combined legacy history refused](./251-combined-before.jpg) | ![Historical messages and expanded tool result](./251-combined-after.jpg) |
+
 The shared Starter baseline also loaded all three optional strategy extensions and reported the installed Native CLI 0.2.8. A separate disposable real-CLI create/write/keyword-recall/forget smoke passed. [Native status screenshot](./baseline-native-status.jpg). These checks do not imply that this patch changes Native storage.
 
 ## Audited transformations and boundaries
@@ -50,4 +56,4 @@ node bin/repair-legacy-session.mjs --input tests/fixtures/issue-251-repairable-v
 MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --strategy-extensions
 ```
 
-The WebUI screenshots above cover Runtime summary recovery. Descriptor and packed-stream recovery are verified by the real published loader and stream replay tests. No Windows source build, live third-party Provider or production Session was tested.
+The WebUI screenshots cover Runtime summary recovery and the combined summary/descriptor/packed-string artifact. Exact timed delta preservation is additionally verified by the published loader and stream replay tests. No Windows source build, live third-party Provider or production Session was tested.

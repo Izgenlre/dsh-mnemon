@@ -16,6 +16,12 @@
 |---|---|
 | ![历史 summary 校验失败](./251-before-runtime-summary.jpg) | ![两轮会话均保留](./251-after-cold-reopen.jpg) |
 
+第二个 WebUI 制品使用[组合夹具](../../../tests/fixtures/issue-251-repairable-v0.jsonl)，包含全部三个 summary、兼容 v2 descriptor，以及 ID/name 为空字符串的 packed 行。旧工具仍在 Runtime summary 7 处失败；新 CLI 报告修复三个 summary、提升一个 descriptor、将一条 packed 行展开为三个 chunk，无 blocker。真实 DSH 加载器迁移副本后，界面显示历史用户请求、助手回复，以及展开的 `synthetic_lookup {}` 与 `Synthetic tool response.`。选择配置好的回环 `DeepSeek-V4-Flash` 路由后恢复可交互输入框。原件 hash 保持为 `94f7da957d213c896c4794603580c9e982670bcd725ecffeee241eab3ad709e5`；修复副本为 `07db52eaacf6d45fc2d4c0a2e8931604674ce332c3a0f823aeed4d4aacaeed3b`。
+
+| 组合制品修复前 | 迁移并渲染工具历史后 |
+|---|---|
+| ![组合旧历史被拒绝](./251-combined-before.jpg) | ![历史消息与展开的工具结果](./251-combined-after.jpg) |
+
 共享 Starter 基线还启用了三个可选 Strategy 扩展，实际状态页显示已安装 Native CLI 0.2.8。一次性真实 CLI 的创建、写入、关键词召回与删除冒烟通过。[Native 状态截图](./baseline-native-status.jpg)。这些检查不表示此补丁修改了 Native 存储。
 
 ## 契约审计与修复边界
@@ -50,4 +56,4 @@ node bin/repair-legacy-session.mjs --input tests/fixtures/issue-251-repairable-v
 MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --strategy-extensions
 ```
 
-上面的 WebUI 截图覆盖 Runtime summary 恢复；descriptor 和 packed stream 由真实已发布加载器与 stream 回放测试验证。未测试 Windows source build、外部真实 Provider 或生产会话。
+WebUI 截图覆盖 Runtime summary 恢复及 summary/descriptor/packed 字符串占位值的组合制品；精确的 delta 时间保留另由真实已发布加载器与 stream 回放测试验证。未测试 Windows source build、外部真实 Provider 或生产会话。

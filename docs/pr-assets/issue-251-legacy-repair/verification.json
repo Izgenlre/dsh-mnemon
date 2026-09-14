@@ -41,10 +41,20 @@
       "path": "baseline-native-status.jpg",
       "bytes": 62005,
       "sha256": "77c67c5bcf180d3ae483e2ab49f718f8870a582ef2f168958ded6332d1d7ae93"
+    },
+    {
+      "path": "251-combined-before.jpg",
+      "bytes": 46956,
+      "sha256": "c1e997bea6b1003e43e0fbd844474cc0fe5008e557d7230cffe8ef50410a5272"
+    },
+    {
+      "path": "251-combined-after.jpg",
+      "bytes": 40096,
+      "sha256": "ac9e2f58e51d87ede85a117502a0c6c512ac8a48ab6118bea71b583d6efb79f6"
     }
   ],
   "limits": [
-    "WebUI screenshots cover Runtime summary recovery; descriptor and packed delta cases use actual released loader and replay tests.",
+    "WebUI screenshots cover Runtime and combined summary/descriptor/packed-string history recovery; exact timed delta preservation is additionally verified by released loader and replay tests.",
     "Null names and empty durable tool identities are explicitly refused; not all issue251 variants are claimed repaired.",
     "Frozen v0 migration rc.1 and rc.2 artifacts are byte-identical; full execution used rc.1.",
     "No production Sessions, external model APIs, Windows source build or live third-party Provider was tested."
@@ -78,5 +88,33 @@
       "packedBigIntBoundaryCases": 125,
       "remainingFindings": 0
     }
+  },
+  "combinedWebui": {
+    "fixture": "tests/fixtures/issue-251-repairable-v0.jsonl",
+    "beforeError": "user/message 7 source summary requires notice form",
+    "repair": {
+      "mode": "copy",
+      "format": 0,
+      "encoding": "zstd",
+      "repairedMessages": 3,
+      "repairedDescriptors": 1,
+      "expandedToolChunkRows": 1,
+      "expandedToolChunks": 3,
+      "inputSha256": "94f7da957d213c896c4794603580c9e982670bcd725ecffeee241eab3ad709e5",
+      "outputSha256": "07db52eaacf6d45fc2d4c0a2e8931604674ce332c3a0f823aeed4d4aacaeed3b",
+      "originalPreserved": true,
+      "migrationValidated": false,
+      "blockers": []
+    },
+    "originalHashVerified": true,
+    "repairedHashVerified": true,
+    "dshMigrationAndReplaySucceeded": true,
+    "historicalUserAndAssistantVisible": true,
+    "expandedToolCall": {
+      "name": "synthetic_lookup",
+      "arguments": "{}",
+      "result": "Synthetic tool response."
+    },
+    "configuredLoopbackRouteSelected": "DeepSeek-V4-Flash"
   }
 }
