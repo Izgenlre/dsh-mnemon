@@ -91,30 +91,60 @@
       "path": "251-null-packed-cold-reopen.jpg",
       "bytes": 62199,
       "sha256": "3b9660279b1475980a28f7be03b0dabff0925769758d2eb35e1d1761bc2afed6"
+    },
+    {
+      "path": "251-existing-id-before.jpg",
+      "bytes": 57760,
+      "sha256": "d08399743517285597b8f0173d9e090b6d79ca38927a1024246c1dcc2c4397b9"
+    },
+    {
+      "path": "251-existing-id-after.jpg",
+      "bytes": 48602,
+      "sha256": "edef105224310ca7bbcbcb21e1392d9878a585c7abf6d802199ba9b38c6e8284"
+    },
+    {
+      "path": "251-existing-id-cold-reopen.jpg",
+      "bytes": 69786,
+      "sha256": "495d2843f4d3bdbafddc05a5741a7e536c3f315c2a082664d32baad62a45f3cb"
+    },
+    {
+      "path": "251-all-legacy-before.jpg",
+      "bytes": 56817,
+      "sha256": "4dcf9266aa5304b584c25d40b53674a15f50c593eacb2fa29e507932eccf3180"
+    },
+    {
+      "path": "251-all-legacy-after.jpg",
+      "bytes": 47571,
+      "sha256": "7e1fc7cf446bf4b3c403a40bf6a133386d9f23f597abc299c0e7d21cf9b18d57"
+    },
+    {
+      "path": "251-all-legacy-cold-reopen.jpg",
+      "bytes": 69694,
+      "sha256": "2d9f9120f0cdb8ec2c08b37b3e63e132bc6cc1fa7d00b365d58d12f5e43c36d8"
     }
   ],
   "limits": [
-    "WebUI screenshots cover Runtime, combined summary/descriptor/packed-string history, and raw/packed null-name recovery; exact timed delta preservation is additionally verified by released loader and replay tests.",
-    "Unknown or unsafe affected delta shapes and empty durable tool identities are explicitly refused; not all issue251 variants are claimed repaired.",
+    "Real WebUI evidence covers all four reported legacy shape families, including combined repair, recorded-ID continuation wire validation and cold reopen. Exact timed delta preservation is additionally checked against the released loader and replay implementation.",
+    "Recovery requires a unique ID already recorded in the exact completed stream and proven call/result associations. Missing/conflicting identities, unsupported or unsafe shapes and unresolved related owner references refuse output.",
     "Frozen v0 migration rc.1 and rc.2 artifacts are byte-identical; full execution used rc.1.",
     "No production Sessions, external model APIs, Windows source build or live third-party Provider was tested."
   ],
   "validation": {
     "fullVerifyPassed": true,
-    "rootPassed": 1050,
+    "rootPassed": 1104,
     "rootSkipped": 5,
     "pluginPassed": 323,
     "pluginSkipped": 2,
-    "totalPassed": 1373,
+    "totalPassed": 1427,
     "totalSkipped": 7,
-    "repairPassed": 88,
+    "repairPassed": 132,
     "headlessTotalTools": 39,
     "headlessRepresentativeMnemonTools": 8,
     "deterministicBuildFiles": 39,
     "packageFiles": 47,
-    "packedBytes": 287432,
-    "unpackedBytes": 1290228,
-    "maximumUnpackedBytes": 1292000,
+    "packedBytes": 293317,
+    "unpackedBytes": 1313898,
+    "maximumUnpackedBytes": 1318000,
     "publicNodeEntries": 12,
     "publicTypeDependencies": 27,
     "executableHelpEntries": 1,
@@ -124,8 +154,12 @@
       "remainingFindings": 0,
       "nullNameVariants": 5,
       "nullNameComparedPrefixes": 36,
-      "oldAndCurrentStatsEquivalent": true
-    }
+      "oldAndCurrentStatsEquivalent": true,
+      "recordedIdentityCases": 28,
+      "recordedIdentityRealLoaderColdReopens": 8,
+      "recordedIdentityRemainingFindings": 0
+    },
+    "wireFixturePassed": 10
   },
   "combinedWebui": {
     "fixture": "tests/fixtures/issue-251-repairable-v0.jsonl",
@@ -212,5 +246,134 @@
     ],
     "environmentNote": "After a DSH Host restart preserving the disposable profile, the in-app browser reported a client bundle load error before session selection. The exact bundle returned HTTP 200 and passed syntax checking. A separate Chrome test tab loaded the same Host normally; both migrated histories, tool output and prior continuation canaries were reopened there. No Host or browser security configuration was changed.",
     "beforeCliRevision": "83d0c40fe7d9e62d60e283a56d1a0a63e31018db"
+  },
+  "recordedIdentityWebui": {
+    "results": [
+      {
+        "variant": "existing-id",
+        "originalSha256": "5c2b140d9c60e8a71c5fde2ae2d150e1bdd77fae53c7641dc0efaf1717278983",
+        "repairedSha256": "85739141506083d559aec9a237c3f27b12295e3f55e3ddda9e28546eb8d0209a",
+        "v3Sha256": "4fa5ab121d5dbf534f688f4a9d5ac0e2eb8a250fd5afb895ce6ba887d83b95e1",
+        "physicalV3Rows": 42,
+        "existingProviderId": "provider-existing-id-251",
+        "originalPreserved": true,
+        "repairedV0Preserved": true,
+        "historicalUserAndPluginBodiesPreserved": true,
+        "historicalAssistantMessagesAndToolResultsPreserved": true,
+        "timedReplayMatchesRepairedCopy": true,
+        "continuedThroughRealWebUI": true,
+        "modelWireIdentityAndPayloadValidated": true,
+        "coldReopenedThroughRealWebUI": true,
+        "coldBrowser": "Chrome",
+        "coldHistoricalRowsUnchanged": true,
+        "coldAppendedBoundary": "session/end-seed",
+        "coldPhysicalV3Rows": 43,
+        "coldV3Sha256": "1a5d43a5d330098663972429670eb8ab71a8bb2311cf4c19110b81f76a1118ee",
+        "coldScreenshot": "251-existing-id-cold-reopen.jpg",
+        "repair": {
+          "mode": "copy",
+          "format": 0,
+          "encoding": "zstd",
+          "repairedMessages": 0,
+          "repairedDescriptors": 0,
+          "expandedToolChunkRows": 0,
+          "expandedToolChunks": 0,
+          "normalizedToolChunkNames": 0,
+          "recoveredToolIdentityChains": 1,
+          "recoveredToolIdentityFields": 7,
+          "toolIdentityRecoveryRefusals": {
+            "occurrences": 0,
+            "samples": []
+          },
+          "inputSha256": "5c2b140d9c60e8a71c5fde2ae2d150e1bdd77fae53c7641dc0efaf1717278983",
+          "outputSha256": "85739141506083d559aec9a237c3f27b12295e3f55e3ddda9e28546eb8d0209a",
+          "originalPreserved": true,
+          "migrationValidated": false,
+          "blockers": []
+        },
+        "beforeError": "assistant/message 27 message content[0] id must be a non-empty string"
+      },
+      {
+        "variant": "all-legacy",
+        "originalSha256": "02918e5bf3ddc83a1c7087fce7622ad46b91bd8c1987ffb423d2669ce276b281",
+        "repairedSha256": "1e30311e7422a4eb6c6b3f5c679901b8dfe902205e6b287f9a7a49ab885ad7f6",
+        "v3Sha256": "aff2908436f065c25289a69d34ebe08d6b18ce7b7b71941baaa78c34eaef05a9",
+        "physicalV3Rows": 42,
+        "existingProviderId": "provider-existing-id-251",
+        "originalPreserved": true,
+        "repairedV0Preserved": true,
+        "historicalUserAndPluginBodiesPreserved": true,
+        "historicalAssistantMessagesAndToolResultsPreserved": true,
+        "timedReplayMatchesRepairedCopy": true,
+        "continuedThroughRealWebUI": true,
+        "modelWireIdentityAndPayloadValidated": true,
+        "coldReopenedThroughRealWebUI": true,
+        "coldBrowser": "Chrome",
+        "coldHistoricalRowsUnchanged": true,
+        "coldAppendedBoundary": "session/end-seed",
+        "coldPhysicalV3Rows": 43,
+        "coldV3Sha256": "4d5fdf7a0f9d0be7f8bbe23570a96c804f6de26efb058bed7edc06da881c5fc1",
+        "coldScreenshot": "251-all-legacy-cold-reopen.jpg",
+        "repair": {
+          "mode": "copy",
+          "format": 0,
+          "encoding": "zstd",
+          "repairedMessages": 3,
+          "repairedDescriptors": 1,
+          "expandedToolChunkRows": 1,
+          "expandedToolChunks": 2,
+          "normalizedToolChunkNames": 2,
+          "recoveredToolIdentityChains": 1,
+          "recoveredToolIdentityFields": 7,
+          "toolIdentityRecoveryRefusals": {
+            "occurrences": 0,
+            "samples": []
+          },
+          "inputSha256": "02918e5bf3ddc83a1c7087fce7622ad46b91bd8c1987ffb423d2669ce276b281",
+          "outputSha256": "1e30311e7422a4eb6c6b3f5c679901b8dfe902205e6b287f9a7a49ab885ad7f6",
+          "originalPreserved": true,
+          "migrationValidated": false,
+          "blockers": []
+        },
+        "beforeError": "user/message 5 source summary requires notice form"
+      }
+    ],
+    "wireReports": [
+      {
+        "event": "legacy-replay-verified",
+        "callId": "provider-existing-id-251",
+        "toolCallCount": 1,
+        "toolResultCount": 1,
+        "argumentsSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "resultSha256": "8306ed2cf00d4ad1484f5f155e24086b2196f6775dc0ba3a5734edb3035a0ed6"
+      },
+      {
+        "event": "legacy-replay-verified",
+        "callId": "provider-existing-id-251",
+        "toolCallCount": 1,
+        "toolResultCount": 1,
+        "argumentsSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "resultSha256": "8306ed2cf00d4ad1484f5f155e24086b2196f6775dc0ba3a5734edb3035a0ed6"
+      }
+    ],
+    "beforeCliRevision": "2612856624bd78cebcf02991e5313742df148f12",
+    "fixtures": [
+      "tests/fixtures/issue-251-existing-id-v0.jsonl",
+      "tests/fixtures/issue-251-all-legacy-v0.jsonl"
+    ],
+    "existingIdPackedExpandedForIsolation": true,
+    "loopbackModelOnly": true,
+    "finalAuditedOutputsMatchTestedCopies": true,
+    "finalCliSha256": "98a0b2cd1b007f6f92db177793c5aee7d852b1bdeefa01f1846fef6e14d6086c",
+    "finalPreviewAndExclusiveCopiesMatchWebuiHashes": true,
+    "scaleSmoke": {
+      "chains": 300,
+      "inputBytes": 709334,
+      "recoveredFields": 2100,
+      "outputSha256": "2918324ec821ea9dbfe3a8ec4eccd60a1cd000ad9a0edc88186eda2bfd20f193",
+      "finalElapsedMs": 681,
+      "finalOutputHashMatchesEarlierPreview": true,
+      "previewOnly": true
+    }
   }
 }

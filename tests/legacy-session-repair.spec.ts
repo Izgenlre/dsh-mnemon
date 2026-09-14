@@ -17,6 +17,8 @@ const toolsFixture = await readFile(new URL('./fixtures/issue-251-valid-tools-v0
 const combinedFixture = await readFile(new URL('./fixtures/issue-251-repairable-v0.jsonl', import.meta.url), 'utf8')
 const nullFixture = await readFile(new URL('./fixtures/issue-251-null-name-v0.jsonl', import.meta.url), 'utf8')
 const packedNullFixture = await readFile(new URL('./fixtures/issue-251-null-name-packed-v0.jsonl', import.meta.url), 'utf8')
+const identityFixture = await readFile(new URL('./fixtures/issue-251-existing-id-v0.jsonl', import.meta.url), 'utf8')
+const allLegacyFixture = await readFile(new URL('./fixtures/issue-251-all-legacy-v0.jsonl', import.meta.url), 'utf8')
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function directory() {
@@ -64,6 +66,27 @@ function replayStream(restored: Awaited<ReturnType<typeof publishedLoad>>) {
   return [...expandAssistantStream(stream)]
 }
 
+function identityRawRows() {
+  return identityFixture.trim().split('\n').map(line => JSON.parse(line)).flatMap(row => {
+    if (row.type !== 'tool-call-chunks') return [row]
+    let time = row.time0
+    return row.data.args.map((argumentsDelta: string, index: number) => {
+      if (index) time += row.data.dt[index - 1]
+      return { type: 'assistant/chunk', seq: row.seq0 + index, time, data: { turn: row.data.turn, step: row.data.step,
+        chunk: { type: 'tool-call-delta', index: row.data.index, id: row.data.id, name: row.data.name, argumentsDelta } } }
+    })
+  })
+}
+const serializeRows = (rows: any[]) => rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+function resequenceIdentityRows(rows: any[], pairs?: any[][]) {
+  for (const [seq, row] of rows.slice(1).entries()) { row.seq = seq; row.time = 1789030660068 + seq }
+  for (const assistant of rows.filter(row => row.type === 'assistant/message')) {
+    assistant.sourceEventSeqs = rows.filter(row => row.type === 'assistant/chunk' && row.data.turn === assistant.data.turn && row.data.step === assistant.data.step).map(row => row.seq)
+  }
+  for (const [call, result] of pairs ?? [[rows.find(row => row.type === 'tool/call'), rows.find(row => row.type === 'tool/result')]]) result.sourceEventSeqs = [call.seq]
+  return rows
+}
+
 async function publishedLoad(root: string, text: string, mode: 'read' | 'write' = 'read') {
   const { id, cwd }: { id: string; cwd: string } = JSON.parse(text.split('\n')[0]!)
   const sessionDir = join(root, `--${cwd.slice(1).replaceAll('/', '-')}--`, id)
@@ -78,6 +101,274 @@ async function publishedLoad(root: string, text: string, mode: 'read' | 'write' 
 }
 
 describe('legacy Session copy repair', () => {
+  it.each(['absent-result-provenance', 'early-placeholder', 'partial-core-ids', 'nonidentity-metadata'] as const)('restores a uniquely proven provider identity with %s', async variant => {
+    const root = await directory()
+    const rows = identityRawRows()
+    let assistant = rows.filter(row => row.type === 'assistant/message').at(-1)!
+    if (variant === 'early-placeholder') {
+      const first = rows.findIndex(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === 'tool-call-delta')
+      const early = structuredClone(rows[first])
+      early.data.chunk = { type: 'tool-call-delta', index: 0, id: '', argumentsDelta: '' }
+      rows.splice(first, 0, early)
+      resequenceIdentityRows(rows)
+    }
+    assistant = rows.filter(row => row.type === 'assistant/message').at(-1)!
+    if (variant === 'absent-result-provenance') delete rows.find(row => row.type === 'tool/result').sourceEventSeqs
+    if (variant === 'partial-core-ids') {
+      assistant.data.message.content[0].id = 'provider-existing-id-251'
+      rows.find(row => row.type === 'tool/result').data.message.source.callId = 'provider-existing-id-251'
+    }
+    if (variant === 'nonidentity-metadata') {
+      // Literal payload text is not an additional structured identity slot.
+      rows.find(row => row.type === 'tool/result').data.message.content[0].content[0].text = 'Opaque result text: callId="" remains literal content.'
+    }
+    const text = serializeRows(rows)
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ recoveredToolIdentityChains: 1, blockers: [] })
+    const after = await readFile(output, 'utf8')
+    const migrated = await publishedLoad(join(root, 'after'), after, 'write')
+    expect((await publishedLoad(join(root, 'after'), after)).events).toEqual(migrated.events)
+    const restored = migrated.events.filter(event => event.type === 'assistant/message').at(-1)!
+    const deltas = expandAssistantStream((restored.data as any).stream).filter(value => value.chunk.type === 'tool-call-delta')
+    expect(deltas.map(value => (value.chunk as any).id)).toEqual(variant === 'early-placeholder' ? ['', ...Array(3).fill('provider-existing-id-251')] : Array(3).fill('provider-existing-id-251'))
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(JSON.parse(cli('--input', output).stdout).recoveredToolIdentityChains).toBe(0)
+  })
+
+  it.each([...
+    (['none', 'zstd'] as const).flatMap(compression => [false, true].map(packedText => ({ compression, packedText, conflictingOther: false }))),
+    { compression: 'none', packedText: false, conflictingOther: true },
+  ])('proves or refuses multiple-call identities while retaining reasoning and text in stream order (%#)', async ({ compression, packedText, conflictingOther }) => {
+    const root = await directory()
+    const rows = identityRawRows()
+    const assistant = rows.filter(row => row.type === 'assistant/message').at(-1)!
+    const firstCall = rows.find(row => row.type === 'tool/call')
+    const firstResult = rows.find(row => row.type === 'tool/result')
+    const firstChunk = rows.findIndex(row => row.type === 'assistant/chunk' && row.data.turn === 2)
+    const chunk = (value: object) => ({ type: 'assistant/chunk', data: { turn: 2, step: 1, chunk: value } })
+    const reasoning = { type: 'reasoning', text: 'Synthetic plan.' }
+    const textBlock = { type: 'text', text: 'Synthetic narration.' }
+    rows.splice(firstChunk, 0,
+      chunk({ type: 'block-start', index: 9, blockType: 'reasoning' }), chunk({ type: 'reasoning-delta', index: 9, text: 'Synthetic' }), chunk({ type: 'reasoning-delta', index: 9, text: ' plan.' }),
+      chunk({ type: 'block-start', index: 4, blockType: 'text' }), chunk({ type: 'text-delta', index: 4, text: 'Synthetic' }), chunk({ type: 'text-delta', index: 4, text: ' narration.' }),
+      chunk({ type: 'block-end', index: 9, block: reasoning }), chunk({ type: 'block-end', index: 4, block: textBlock }))
+    const secondBlock = { type: 'tool-call', id: '', name: 'synthetic_second', arguments: '{"second":true}' }
+    const usageIndex = rows.findIndex(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === 'usage')
+    rows.splice(usageIndex, 0, chunk({ type: 'block-start', index: 2, blockType: 'tool-call' }),
+      chunk({ type: 'tool-call-delta', index: 2, id: 'provider-second-id', name: secondBlock.name, argumentsDelta: '{' }),
+      chunk({ type: 'tool-call-delta', index: 2, id: '', argumentsDelta: '"second":true}' }), chunk({ type: 'block-end', index: 2, block: secondBlock }))
+    assistant.data.message.content = [reasoning, textBlock, ...assistant.data.message.content, secondBlock]
+    const secondCall = structuredClone(firstCall)
+    Object.assign(secondCall.data, { name: secondBlock.name, arguments: secondBlock.arguments })
+    const secondResult = structuredClone(firstResult)
+    secondResult.data.message.id += '-second'
+    secondResult.data.message.content[0].content[0].text = 'Second synthetic result.'
+    rows.splice(rows.indexOf(firstResult), 0, secondCall, secondResult) // Result order differs from advertisement order.
+    resequenceIdentityRows(rows, [[firstCall, firstResult], [secondCall, secondResult]])
+    if (packedText) for (const kind of ['reasoning', 'text']) {
+      const index = rows.findIndex(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === `${kind}-delta`)
+      const first = rows[index]
+      const second = rows[index + 1]
+      rows.splice(index, 2, { type: `${kind}-chunks`, seq0: first.seq, time0: first.time, data: { turn: 2, step: 1, index: first.data.chunk.index,
+        dt: [second.time - first.time], texts: [first.data.chunk.text, second.data.chunk.text] } })
+    }
+    if (conflictingOther) {
+      secondBlock.id = 'provider-second-id'
+      secondCall.data.callId = 'provider-existing-id-251'
+      secondResult.data.message.source.callId = 'provider-second-id'
+      secondResult.data.message.content[0].toolCallId = 'provider-second-id'
+    }
+    const text = serializeRows(rows)
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    const original = compression === 'none' ? Buffer.from(text) : compressFrames(text)
+    await writeFile(input, original)
+    const result = cli('--input', input, '--output', output)
+    if (conflictingOther) {
+      expect(result.status).toBe(1)
+      expect(JSON.parse(result.stdout)).toMatchObject({ recoveredToolIdentityChains: 0, mode: 'refused', outputSha256: null })
+      expect(await readFile(input)).toEqual(original)
+      expect(await readdir(root)).toEqual(['input'])
+      return
+    }
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ recoveredToolIdentityChains: 2, blockers: [] })
+    const bytes = await readFile(output)
+    const after = compression === 'none' ? bytes.toString() : decompressFrames(bytes)
+    if (packedText) for (const line of text.split('\n').filter(line => /"type":"(?:text|reasoning)-chunks"/.test(line))) expect(after.split('\n')).toContain(line)
+    const migrated = await publishedLoad(join(root, 'after'), after, 'write')
+    const restored = migrated.events.filter(event => event.type === 'assistant/message').at(-1)!
+    expect((restored.data as any).message.content).toEqual([reasoning, textBlock,
+      { type: 'tool-call', id: 'provider-existing-id-251', name: 'synthetic_lookup', arguments: '{}' }, { ...secondBlock, id: 'provider-second-id' }])
+    expect(migrated.events.filter(event => event.type === 'tool/result').map(event => (event.data as any).message.source.callId)).toEqual(['provider-second-id', 'provider-existing-id-251'])
+    expect((await publishedLoad(join(root, 'after'), after)).events).toEqual(migrated.events)
+    expect(await readFile(input)).toEqual(original)
+  })
+
+  it('allows the same provider ID in an independently completed later turn', async () => {
+    const root = await directory()
+    const rows = identityRawRows()
+    const next = structuredClone(rows.slice(rows.findIndex(row => row.type === 'turn/start' && row.data.turn === 2)))
+    for (const row of next) {
+      row.data.turn = 3
+      const chunk = row.data.chunk
+      if (chunk?.type === 'tool-call-delta' && chunk.id === '') chunk.id = 'provider-existing-id-251'
+      if (chunk?.type === 'block-end') chunk.block.id = 'provider-existing-id-251'
+      if (row.type === 'assistant/message') { row.data.message.id += '-later'; row.data.message.content[0].id = 'provider-existing-id-251' }
+      if (row.type === 'tool/call') row.data.callId = 'provider-existing-id-251'
+      if (row.type === 'tool/result') {
+        row.data.message.id += '-later'
+        row.data.message.source.callId = 'provider-existing-id-251'
+        row.data.message.content[0].toolCallId = 'provider-existing-id-251'
+      }
+    }
+    resequenceIdentityRows([...rows, ...next], [
+      [rows.find(row => row.type === 'tool/call'), rows.find(row => row.type === 'tool/result')],
+      [next.find(row => row.type === 'tool/call'), next.find(row => row.type === 'tool/result')],
+    ])
+    const text = serializeRows([...rows, ...next])
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout).recoveredToolIdentityChains).toBe(1)
+    const after = await readFile(output, 'utf8')
+    const migrated = await publishedLoad(join(root, 'after'), after, 'write')
+    expect(migrated.events.filter(event => event.type === 'tool/call').map(event => (event.data as any).callId)).toEqual(Array(2).fill('provider-existing-id-251'))
+    expect((await publishedLoad(join(root, 'after'), after)).events).toEqual(migrated.events)
+  })
+
+  it('patches only exact identity tokens while preserving opaque metadata and message UUIDs', async () => {
+    const root = await directory()
+    const rows = identityRawRows()
+    rows.find(row => row.type === 'tool/result').data.meta = { owner: { value: 'large-number', spelling: '\\u4e2d' } }
+    const text = serializeRows(rows).replace('"large-number"', '9007199254740993').replaceAll('"id":""', '"id" : ""').replaceAll('\n', '\r\n')
+    const expected = text.replaceAll('"id" : ""', '"id" : "provider-existing-id-251"').replaceAll('"callId":""', '"callId":"provider-existing-id-251"')
+      .replaceAll('"toolCallId":""', '"toolCallId":"provider-existing-id-251"')
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    await writeFile(input, text)
+    expect(cli('--input', input, '--output', output).status).toBe(0)
+    expect(await readFile(output, 'utf8')).toBe(expected)
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(cli('--input', input, '--output', output).status).toBe(1)
+    expect(await readFile(output, 'utf8')).toBe(expected)
+  })
+
+  it('refuses duplicate keys in provider candidates, provenance and opaque owner metadata', async () => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const base = serializeRows(identityRawRows())
+    const rows = identityRawRows()
+    rows.find(row => row.type === 'tool/result').data.meta = { owner: { field: 'placeholder' } }
+    const sources = JSON.stringify(rows.filter(row => row.type === 'assistant/message').at(-1)!.sourceEventSeqs)
+    for (const text of [
+      base.replace('"id":"provider-existing-id-251"', '"id":"conflict","id":"provider-existing-id-251"'),
+      base.replace(`"sourceEventSeqs":${sources}`, `"sourceEventSeqs":[],"sourceEventSeqs":${sources}`),
+      serializeRows(rows).replace('"field":"placeholder"', '"field":0,"field":"placeholder"'),
+    ]) {
+      await writeFile(input, text)
+      const result = cli('--input', input, '--output', join(root, 'output'))
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('Duplicate JSON property')
+      expect(await readFile(input, 'utf8')).toBe(text)
+      expect(await readdir(root)).toEqual(['input'])
+    }
+  })
+
+  it.each([
+    'no-candidate', 'conflicting-delta-id', 'conflicting-durable-id', 'candidate-on-other-index', 'missing-block-start', 'duplicate-block-end', 'post-end-delta',
+    'interrupted-message', 'non-tool-finish', 'missing-finish', 'owner-replay-state', 'usage-mismatch', 'unordered-provenance', 'omitted-delta', 'duplicate-provenance',
+    'huge-provenance-range', 'wrong-result-provenance', 'duplicate-call', 'unadvertised-candidate-call', 'invalid-call-owner-shape', 'invalid-result-owner-shape',
+    'approval-reference', 'ptc-reference', 'plugin-reference', 'later-linked-reference', 'later-message-reference', 'later-shadowed-range-reference', 'copied-result',
+  ])('refuses a provider-ID repair with %s and publishes no partial copy', async variant => {
+    const root = await directory()
+    const rows = identityRawRows()
+    const assistant = rows.filter(row => row.type === 'assistant/message').at(-1)!
+    const call = rows.find(row => row.type === 'tool/call')
+    const result = rows.find(row => row.type === 'tool/result')
+    const deltas = rows.filter(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === 'tool-call-delta')
+    const end = rows.find(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === 'block-end')
+    const finish = rows.find(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === 'finish')
+    let extra
+    if (variant === 'no-candidate') deltas[0].data.chunk.id = ''
+    if (variant === 'conflicting-delta-id') deltas[1].data.chunk.id = 'another-provider-id'
+    if (variant === 'conflicting-durable-id') call.data.callId = 'another-provider-id'
+    if (variant === 'candidate-on-other-index') deltas[0].data.chunk.index = 1
+    if (variant === 'missing-block-start') rows.splice(rows.findIndex(row => row.type === 'assistant/chunk' && row.data.turn === 2 && row.data.chunk.type === 'block-start'), 1)
+    if (variant === 'duplicate-block-end') rows.splice(rows.indexOf(end), 0, structuredClone(end))
+    if (variant === 'post-end-delta') rows.splice(rows.indexOf(end) + 1, 0, structuredClone(deltas[1]))
+    if (variant === 'interrupted-message') assistant.data.interrupted = true
+    if (variant === 'non-tool-finish') finish.data.chunk.reason.kind = 'max-tokens'
+    if (variant === 'missing-finish') rows.splice(rows.indexOf(finish), 1)
+    if (variant === 'owner-replay-state') assistant.data.message.source.replayState = { response: { untouched: true } }
+    if (variant === 'usage-mismatch') assistant.data.usage.outputTokens++
+    if (variant === 'duplicate-call') extra = structuredClone(call)
+    if (variant === 'unadvertised-candidate-call') { extra = structuredClone(call); Object.assign(extra.data, { callId: 'provider-existing-id-251', name: 'other_lookup', arguments: '{"other":true}' }) }
+    if (variant === 'invalid-call-owner-shape') call.data.unknownOwner = true
+    if (variant === 'invalid-result-owner-shape') delete result.data.message.content[0].content
+    if (variant === 'approval-reference') extra = { type: 'approval/asked', data: { id: 'synthetic-approval', toolName: 'synthetic_lookup', callId: '' } }
+    if (variant === 'ptc-reference') extra = { type: 'tool/code-dispatch-start', data: { rootCallId: '', parentCallId: '', subCallId: ':code:1', name: 'nested_lookup', arguments: {} } }
+    if (['plugin-reference', 'later-linked-reference', 'later-message-reference', 'later-shadowed-range-reference'].includes(variant)) extra = { type: 'user/message', surfaceOp: 'append', data: { role: 'user', id: 'other-plugin-message', source: { kind: 'plugin', plugin: 'other-plugin' }, content: [{ type: 'owner-metadata', callId: '' }] } }
+    if (variant === 'copied-result') { extra = structuredClone(result); extra.data.message.id += '-copy' }
+    if (extra) rows.splice(variant.startsWith('later-') ? rows.length - 1 : rows.indexOf(result) + 1, 0, extra)
+    resequenceIdentityRows(rows)
+    if (variant === 'unordered-provenance') assistant.sourceEventSeqs.reverse()
+    if (variant === 'omitted-delta') { deltas[1].data.chunk.id = 'hidden-conflict'; assistant.sourceEventSeqs = assistant.sourceEventSeqs.filter((seq: number) => seq !== deltas[1].seq) }
+    if (variant === 'duplicate-provenance') assistant.sourceEventSeqs.push(assistant.sourceEventSeqs[0])
+    if (variant === 'huge-provenance-range') assistant.sourceEventSeqs = [[0, Number.MAX_SAFE_INTEGER]]
+    if (variant === 'wrong-result-provenance') result.sourceEventSeqs = [assistant.seq]
+    if (variant === 'later-linked-reference') extra.data.content[0].sourceEventSeq = call.seq
+    if (variant === 'later-message-reference') extra.data.content[0].messageId = assistant.data.message.id
+    if (variant === 'later-shadowed-range-reference') extra.data.content[0].shadowedRange = { start: assistant.seq, end: result.seq }
+    if (variant === 'copied-result') extra.sourceEventSeqs = [call.seq]
+    const text = serializeRows(rows)
+    const input = join(root, 'input')
+    await writeFile(input, text)
+    const report = cli('--input', input, '--output', join(root, 'output'))
+    expect(report.status).toBe(1)
+    expect(JSON.parse(report.stdout)).toMatchObject({ mode: 'refused', recoveredToolIdentityChains: 0, recoveredToolIdentityFields: 0, outputSha256: null })
+    expect(JSON.parse(report.stdout).toolIdentityRecoveryRefusals.occurrences).toBeGreaterThan(0)
+    expect(await readFile(input, 'utf8')).toBe(text)
+    expect(await readdir(root)).toEqual(['input'])
+  })
+
+  it.each([identityFixture, allLegacyFixture].flatMap(text => (['none', 'zstd'] as const).map(compression => ({ text, compression }))))('recovers only the provider ID already recorded in the complete historical tool chain (%#)', async ({ text, compression }) => {
+    const root = await directory()
+    const input = join(root, 'input')
+    const output = join(root, 'output')
+    const before = compression === 'none' ? Buffer.from(text) : compressFrames(text)
+    await writeFile(input, before)
+    await expect(publishedLoad(join(root, 'before'), text)).rejects.toThrow(/source summary requires notice form|id and optional name must be strings/)
+    const result = cli('--input', input, '--output', output)
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ recoveredToolIdentityChains: 1, recoveredToolIdentityFields: 7, blockers: [] })
+    const bytes = await readFile(output)
+    const after = compression === 'none' ? bytes.toString() : decompressFrames(bytes)
+    const migrated = await publishedLoad(join(root, 'after'), after, 'write')
+    const assistant = migrated.events.filter(event => event.type === 'assistant/message').at(-1)!
+    const content = (assistant.data as any).message.content
+    expect(content).toEqual([{ type: 'tool-call', id: 'provider-existing-id-251', name: 'synthetic_lookup', arguments: '{}' }])
+    const stream = expandAssistantStream((assistant.data as any).stream)
+    expect(stream.filter(value => value.chunk.type === 'tool-call-delta').map(value => (value.chunk as any).id)).toEqual(Array(3).fill('provider-existing-id-251'))
+    expect(new Set(migrated.events.filter(event => event.type === 'tool/call').map(event => (event.data as any).callId))).toEqual(new Set(['provider-existing-id-251']))
+    const toolResult = migrated.events.find(event => event.type === 'tool/result')!
+    expect((toolResult.data as any).message.source.callId).toBe('provider-existing-id-251')
+    expect((toolResult.data as any).message.content[0]).toMatchObject({ toolCallId: 'provider-existing-id-251', content: [{ type: 'text', text: 'Synthetic tool response with the original provider ID.' }] })
+    expect(after.split('\n').find(line => line.includes('synthetic-other-memory-source'))).toBe(text.split('\n').find(line => line.includes('synthetic-other-memory-source')))
+    expect((await publishedLoad(join(root, 'after'), after)).events).toEqual(migrated.events)
+    expect(await readFile(input)).toEqual(before)
+    const repeated = cli('--input', output, '--output', join(root, 'idempotent'))
+    expect(repeated.status).toBe(0)
+    expect(JSON.parse(repeated.stdout)).toMatchObject({ recoveredToolIdentityChains: 0, recoveredToolIdentityFields: 0 })
+    expect(await readFile(join(root, 'idempotent'))).toEqual(bytes)
+  })
+
   it.each(['none', 'zstd'] as const)('repairs all supported shapes together without changing another plugin (%s)', async compression => {
     const root = await directory()
     const input = join(root, 'input')
