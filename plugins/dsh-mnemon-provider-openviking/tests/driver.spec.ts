@@ -37,13 +37,16 @@ describe('standalone OpenViking data plane', () => {
       return ok([
         { user_id: 'alice', display_name: 'Alice', description: 'Product lead memory.' },
         { user_id: 'bob', name: 'Bob', role: 'Engineer' },
+        { user_id: '../foreign', display_name: 'Unsafe namespace' },
+        { user_id: '%2e%2e', display_name: 'Encoded unsafe namespace' },
+        { user_id: 'a@b@c', display_name: 'Invalid identity' },
       ])
     })
     const { provider } = await bodyAndRegistry(fetchMock)
 
     await expect(provider.discover({ endpoint: 'https://memory.example.com', apiKey: 'private-key', account: 'acme' })).resolves.toEqual([
-      { externalId: 'acme:alice', name: 'Alice', description: 'Product lead memory.', connection: { targetUri: 'viking://user/memories', user: 'alice', actorPeerId: 'dsh' } },
-      { externalId: 'acme:bob', name: 'Bob', description: 'Engineer', connection: { targetUri: 'viking://user/memories', user: 'bob', actorPeerId: 'dsh' } },
+      { externalId: 'acme:alice', name: 'Alice', description: 'Product lead memory.', connection: { targetUri: 'viking://user/alice/memories', user: 'alice', actorPeerId: 'dsh' } },
+      { externalId: 'acme:bob', name: 'Bob', description: 'Engineer', connection: { targetUri: 'viking://user/bob/memories', user: 'bob', actorPeerId: 'dsh' } },
     ])
   })
 
@@ -51,6 +54,7 @@ describe('standalone OpenViking data plane', () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       requests.push({ url: String(url), ...(init === undefined ? {} : { init }) })
+      if (new URL(String(url)).pathname === '/api/v1/content/read') return ok('用户偏好简洁中文回答。')
       return ok({
         memories: [{
           uri: 'viking://user/team/memories/preferences/style.md',
@@ -84,7 +88,7 @@ describe('standalone OpenViking data plane', () => {
   })
 
   it('browses remote memory markdown without exposing OpenViking system files', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () => ok([
+    const fetchMock = vi.fn<typeof fetch>(async url => new URL(String(url)).pathname === '/api/v1/content/read' ? ok('偏好简洁回答。') : ok([
       { uri: 'viking://user/team/memories/preferences/style.md', isDir: false, abstract: '偏好简洁回答。', modTime: '2026-08-16T00:00:00Z' },
       { uri: 'viking://user/team/memories/preferences', isDir: true },
       { uri: 'viking://user/team/memories/preferences/.abstract.md', isDir: false, abstract: 'system summary' },
@@ -102,15 +106,18 @@ describe('standalone OpenViking data plane', () => {
     const requests: Array<{ path: string; body: Record<string, unknown> }> = []
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       const path = new URL(String(url)).pathname
-      requests.push({ path, body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      if (path === '/api/v1/content/read') return ok('发布必须先通过灰度验证。')
+      const input = JSON.parse(String(init?.body)) as Record<string, unknown>
+      requests.push({ path, body: input })
       if (path === '/api/v1/content/write') {
         return ok({
-          uri: 'viking://user/team/memories/experiences/20260816010101-example-1a2b3c4d.md',
+          uri: input.uri,
           root_uri: 'viking://user/team/memories/experiences',
           context_type: 'memory',
-          mode: 'replace',
-          written_bytes: 42,
+          mode: 'create',
+          written_bytes: Buffer.byteLength(String(input.content)),
           content_updated: true,
+          semantic_status: 'skipped',
           vector_status: 'complete',
         })
       }
@@ -122,13 +129,13 @@ describe('standalone OpenViking data plane', () => {
       action: 'stored',
       provider: 'openviking',
       vectorStatus: 'complete',
-      writtenBytes: 42,
+      writtenBytes: Buffer.byteLength('发布必须先通过灰度验证。'),
     })
 
     expect(requests).toHaveLength(1)
     expect(requests[0]?.path).toBe('/api/v1/content/write')
     expect(requests[0]?.body).toMatchObject({
-      mode: 'replace',
+      mode: 'create',
       wait: true,
       content: '发布必须先通过灰度验证。',
       tags: ['source=mnemon', 'category=decision', 'importance=4'],
@@ -138,18 +145,26 @@ describe('standalone OpenViking data plane', () => {
 
   it('routes each memory category into its OpenViking memory folder', async () => {
     const uris: string[] = []
-    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      const request = JSON.parse(String(init?.body)) as { uri: string }
+    const files = new Map<string, string>()
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const parsed = new URL(String(url))
+      if (parsed.pathname === '/api/v1/content/read') return ok(files.get(parsed.searchParams.get('uri')!))
+      const request = JSON.parse(String(init?.body)) as { uri: string; content: string }
       uris.push(request.uri)
-      return ok({ uri: request.uri, vector_status: 'complete' })
+      files.set(request.uri, request.content)
+      return ok({ uri: request.uri, mode: 'create', context_type: 'memory', content_updated: true,
+        written_bytes: Buffer.byteLength(request.content), semantic_status: 'skipped', vector_status: 'complete' })
     })
     const { body, provider } = await bodyAndRegistry(fetchMock)
 
     await provider.remember(body, { content: '偏好简洁回答。', category: 'preference' })
     await provider.remember(body, { content: '发布必须先通过灰度验证。', category: 'decision' })
     await provider.remember(body, { content: 'ServerKit 使用 Go 后端。', category: 'fact' })
+    await provider.remember(body, { content: 'Context', category: 'context' })
+    await provider.remember(body, { content: 'Insight', category: 'insight' })
+    await provider.remember(body, { content: 'General', category: 'general' })
 
-    expect(uris.map(uri => uri.split('/').at(-2))).toEqual(['preferences', 'experiences', 'entities'])
+    expect(uris.map(uri => uri.split('/').at(-2))).toEqual(['preferences', 'experiences', 'entities', 'events', 'experiences', 'entities'])
   })
 
   it('forgets only an exact non-generated memory file inside the configured root', async () => {

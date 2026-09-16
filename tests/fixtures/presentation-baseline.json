@@ -90,6 +90,16 @@
       "sha256": "3d9159e3de1143cd73e68cc09917ee236101af5cb64aa81fc977028c9bb503bd"
     }
   },
+  "openVikingExactWrite": {
+    "en": {
+      "keys": 980,
+      "sha256": "365372336a9c82749d2807d68804c876dce2186213141369b957e541403ff82d"
+    },
+    "zh": {
+      "keys": 980,
+      "sha256": "7a05cfab9288ba1746a530ee63183299d8e7dcc7afed3a55f9a58483437ff13f"
+    }
+  },
   "idleReviewWarning": {
     "en": {
       "keys": 980,

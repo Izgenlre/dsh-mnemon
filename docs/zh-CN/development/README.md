@@ -75,6 +75,8 @@ MNEMON_NATIVE_TEST_CLI=/absolute/path/to/mnemon pnpm exec vitest run tests/runti
 
 该测试不会发现个人数据根或安装二进制。这些检查不等于验证过所有真实远端服务或账号配置。Provider Lab 是需要明确启动的独立集成环境。
 
+OpenViking 提供显式启用的回环集成测试：`MNEMON_OPENVIKING_TEST_ENDPOINT=http://127.0.0.1:1933 pnpm --filter dsh-mnemon-provider-openviking exec vitest run tests/integration.spec.ts`。只使用临时后端。测试对唯一的中英文合成资料执行创建、精确读回、搜索、浏览和精确删除；普通 CI 跳过该测试。正式发布的 v0.4.20 服务配合本地确定性 embedding 可验证 HTTP、存储和索引契约，不能证明语义模型质量。
+
 Runtime 用例在 View 固定后，通过真实 Host 工具创建并激活两个 Native 空间，归档两条完整检查点并验证待新增内容。路由决策由本地脚本固定，不调用模型 API。
 
 可选的 Flash 压力测试使用四个真实 DSH 会话、委派写入者、独立维护任务和临时 Native 存储，保留默认 10 KiB 上限，验证反复归档后的精确原文、命名空间路由和无会话 Web 管理。通过 `DEEPSEEK_API_KEY` 提供 DeepSeek 凭据，通过 `MNEMON_NATIVE_TEST_CLI` 提供已验证的 CLI，然后运行：
@@ -115,6 +117,8 @@ pnpm e2e:serve
 `pnpm e2e:serve --review-evidence --strategy-extensions` 添加按 Agent 注册的合成概览工具及固定的父会话 / 审查调用，检查五个完整分块的继承，并在修复前后尝试相同的外部工具读取；见 [Issue #211 验证记录](../../pr-assets/issue-211-20260911/README.zh-CN.md)。`tests/review-evidence-host.spec.ts` 还覆盖真实 DSH native 与 Code Mode 中，在 Provider 的 start Promise 返回前发生的工具执行。
 
 检查无会话 Sidebar、所有一级/二级页面、Runtime 增改删与清空分支、Documents 创建/搜索/读取、Provider 设置与发现、激活、故障态、取消弹窗、存入记忆、布局切换、locale、返回聊天后交互恢复。读写/删除使用临时 Provider 或受控夹具，不能对个人记忆做实验。
+
+Issue #233 使用 `node scripts/fixtures/openviking-protocol.mjs` 与 `pnpm e2e:serve --openviking-write`。把 OpenViking 配置为 `http://127.0.0.1:19335`，account/user 为 `default`，不设置 API key，然后在 Mnemon E2E 中发送 `openviking-write-233`。模型夹具只驱动一次真实 Host 和受监督 writer 工具。协议夹具刻意返回有 cosmetic update、但未存储候选正文的抽取结果，用于暴露基线误报；`/__fixture` 明确标注并记录合成请求和文件。后端验收需再对临时真实 OpenViking 服务执行同样流程；协议夹具不能代表真实抽取或语义质量。
 
 验证内嵌 Electron Host 时，使用 `pnpm e2e:serve --electron=/absolute/path/to/electron`（macOS 指向 `Electron.app/Contents/MacOS/Electron`）。单独安装测试用 Electron，并通过 `MNEMON_CLI_PATH` 和 `npm_config_prefix` 指定隔离的 npm 安装。夹具将正式发布的 DSH Web 栈运行在 Electron 主进程内，Host 不设置 `ELECTRON_RUN_AS_NODE`。它为正式 Cordis loader 开放 Node internals，无需重新编译或修改 DSH 包。照常用 Ctrl-C 停止。
 

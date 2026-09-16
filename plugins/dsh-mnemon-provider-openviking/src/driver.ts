@@ -42,14 +42,8 @@ function number(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-/**
- * OpenViking keeps long-term memory as markdown files under the memory
- * namespace, and its extraction pipeline only derives durable memories from a
- * conversation: a session whose single turn carries the memorized text is
- * committed with an empty diff, so remember() used to report success while
- * nothing was stored. Writing the file through the content API keeps the write
- * deterministic and makes it retrievable as soon as it returns.
- */
+// Agent-authored memories use the content API; extraction counters cannot
+// prove that a one-turn session stored the caller's text.
 const MEMORY_FOLDERS: Record<string, string> = {
   preference: 'preferences',
   insight: 'experiences',
@@ -60,11 +54,27 @@ const MEMORY_FOLDERS: Record<string, string> = {
 }
 
 function memoryUri(root: string, category: string, content: string): string {
-  const folder = MEMORY_FOLDERS[category] ?? 'entities'
+  const folder = Object.hasOwn(MEMORY_FOLDERS, category) ? MEMORY_FOLDERS[category] : 'entities'
   const firstLine = content.split('\n').find(line => line.trim().length > 0) ?? 'memory'
-  const slug = firstLine.replace(/^#+\s*/u, '').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 48).toLowerCase() || 'memory'
+  const slug = Array.from(firstLine.replace(/^#+\s*/u, '').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/gu, '')).slice(0, 48).join('').toLowerCase() || 'memory'
   const stamp = new Date().toISOString().replace(/[-:T]/gu, '').slice(0, 14)
-  return `${root}/${folder}/${stamp}-${slug}-${randomUUID().slice(0, 8)}.md`
+  return `${root}/${folder}/${stamp}-${slug}-${randomUUID()}.md`
+}
+
+function safeUser(user: string): boolean {
+  return /^[a-zA-Z0-9_.@-]+$/u.test(user) && user !== '.' && user !== '..' && (user.match(/@/gu)?.length ?? 0) <= 1
+}
+
+function isMemoryFile(uri: string, root: string): boolean {
+  if (!uri.startsWith(`${root}/`) || !uri.endsWith('.md') || /[%?#\\\u0000-\u001f\u007f]/u.test(uri)) return false
+  return uri.slice(root.length + 1).split('/').every(part => part !== '' && !part.startsWith('.') && part.trim() === part)
+}
+
+function queueFailed(value: unknown): boolean {
+  return Object.values(object(value) ?? {}).some(entry => {
+    const queue = object(entry)
+    return (number(queue?.error_count) ?? 0) > 0 || (Array.isArray(queue?.errors) && queue.errors.length > 0)
+  })
 }
 
 function categoryFromUri(uri: string): string {
@@ -101,12 +111,12 @@ export class OpenVikingProvider implements MemoryProviderAdapter {
     return items.flatMap(value => {
       const item = object(value)
       const user = string(item?.user_id) ?? string(item?.id) ?? string(item?.name)
-      if (user === undefined) return []
+      if (user === undefined || !safeUser(user)) return []
       return [{
         externalId: `${account}:${user}`,
         name: string(item?.display_name) ?? string(item?.name) ?? user,
         description: string(item?.description) ?? string(item?.role) ?? `OpenViking memory namespace for ${user}`,
-        connection: { targetUri: 'viking://user/memories', user, actorPeerId: 'dsh' },
+        connection: { targetUri: `viking://user/${user}/memories`, user, actorPeerId: 'dsh' },
       }]
     })
   }
@@ -121,23 +131,22 @@ export class OpenVikingProvider implements MemoryProviderAdapter {
   }
 
   async search(body: MemorySpace, request: SearchRequest, signal?: AbortSignal): Promise<ProviderSearchResult> {
-    const connection = this.connection(body)
+    const memoryRoot = await this.memoryRoot(body, signal)
     const result = await this.request(body, '/api/v1/search/find', {
       method: 'POST',
       body: JSON.stringify({
         query: request.query,
-        target_uri: connection.targetUri,
+        target_uri: memoryRoot,
         context_type: ['memory'],
         limit: request.limit,
       }),
     }, { signal })
     const root = object(result)
     const entries = Array.isArray(root?.memories) ? root.memories : []
-    return {
-      results: entries.flatMap((value): Insight[] => {
+    const matches = entries.flatMap((value): Insight[] => {
         const item = object(value)
         const uri = string(item?.uri)
-        if (uri === undefined) return []
+        if (uri === undefined || !isMemoryFile(uri, memoryRoot)) return []
         const score = number(item?.score)
         return [{
           id: uri,
@@ -147,8 +156,8 @@ export class OpenVikingProvider implements MemoryProviderAdapter {
           source: 'external',
           ...(score === undefined ? {} : { score }),
         }]
-      }),
-    }
+      }).slice(0, request.limit)
+    return { results: await Promise.all(matches.map(async item => ({ ...item, content: await this.readContent(body, item.id, signal) }))) }
   }
 
   async graph(body: MemorySpace, signal?: AbortSignal): Promise<MemoryGraphSnapshot> {
@@ -163,25 +172,18 @@ export class OpenVikingProvider implements MemoryProviderAdapter {
   }
 
   async list(body: MemorySpace, request: MemoryListRequest, signal?: AbortSignal): Promise<Insight[]> {
-    const connection = this.connection(body)
-    const query = new URLSearchParams({ uri: connection.targetUri, recursive: 'true', output: 'original' })
+    const memoryRoot = await this.memoryRoot(body, signal)
+    const query = new URLSearchParams({ uri: memoryRoot, recursive: 'true', output: 'original' })
     const result = await this.request(body, `/api/v1/fs/ls?${query}`, {}, { signal })
     const entries = Array.isArray(result) ? result : []
     const limit = Math.min(Math.max(request.limit ?? 200, 1), 1000)
     const files = entries.flatMap((value): Array<{ item: Record<string, unknown>; uri: string }> => {
       const item = object(value)
       const uri = string(item?.uri)
-      const filename = uri?.slice(uri.lastIndexOf('/') + 1)
-      return item === undefined || uri === undefined || item.isDir === true || filename?.startsWith('.') === true || !uri.endsWith('.md') ? [] : [{ item, uri }]
+      return item === undefined || uri === undefined || item.isDir === true || !isMemoryFile(uri, memoryRoot) ? [] : [{ item, uri }]
     }).slice(0, limit)
     return Promise.all(files.map(async ({ item, uri }): Promise<Insight> => {
-      let content = string(item.abstract) ?? string(item.overview) ?? ''
-      if (content === '') {
-        try {
-          const read = await this.request(body, `/api/v1/content/abstract?uri=${encodeURIComponent(uri)}`, {}, { signal })
-          content = string(read) ?? string(object(read)?.content) ?? string(object(read)?.abstract) ?? uri
-        } catch { content = uri }
-      }
+      const content = await this.readContent(body, uri, signal)
       const createdAt = string(item.modTime)
       return {
         id: uri,
@@ -195,46 +197,59 @@ export class OpenVikingProvider implements MemoryProviderAdapter {
   }
 
   async remember(body: MemorySpace, request: RememberRequest, signal?: AbortSignal): Promise<JsonValue> {
-    const connection = this.connection(body)
-    const root = connection.targetUri.replace(/\/+$/u, '')
-    if (root === '') throw new Error('OpenViking memory space requires a memory URI')
+    const root = await this.memoryRoot(body, signal)
     const category = string(request.category) ?? 'general'
     const uri = memoryUri(root, category, request.content)
     const tags = ['source=mnemon', `category=${category}`]
     const importance = number(request.importance)
     if (importance !== undefined) tags.push(`importance=${importance}`)
-    const written = object(await this.request(body, '/api/v1/content/write', {
-      method: 'POST',
-      body: JSON.stringify({ uri, content: request.content, mode: 'replace', wait: true, tags }),
-    }, { signal, timeoutMs: Math.max(this.requestTimeoutMs, 60_000) })) ?? {}
-    const rootUri = string(written.root_uri)
-    const writtenBytes = number(written.written_bytes)
+    const writtenBytes = Buffer.byteLength(request.content, 'utf8')
+    try {
+      const written = object(await this.request(body, '/api/v1/content/write', {
+        method: 'POST',
+        body: JSON.stringify({ uri, content: request.content, mode: 'create', wait: true, timeout: this.requestTimeoutMs / 1000, tags }),
+      }, { signal }))
+      if (written?.uri !== uri || written.content_updated !== true || written.written_bytes !== writtenBytes
+        || written.mode !== 'create' || written.context_type !== 'memory'
+        || written.vector_status !== 'complete' || !['complete', 'skipped'].includes(String(written.semantic_status))
+        || queueFailed(written.queue_status)) {
+        throw new Error('content API did not confirm this exact memory and completed indexing')
+      }
+      // The public read projection removes OpenViking's reserved metadata.
+      // Reject normalization or a stale read rather than promising exactness.
+      if (await this.readContent(body, uri, signal) !== request.content) throw new Error('stored content does not match the requested text')
+      signal?.throwIfAborted()
+    } catch (error) {
+      // A server timeout can happen after the file was written. Do not retry,
+      // fall back to extraction, or delete a target whose creation is uncertain.
+      throw new Error(`OpenViking write was not verified at ${uri}; remote content may remain. Inspect this URI before retrying. ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+    }
     return {
       action: 'stored',
       provider: 'openviking',
+      id: uri,
       uri,
       externalUri: uri,
       summary: `OpenViking stored the memory at ${uri} (category ${category}).`,
-      ...(rootUri === undefined ? {} : { rootUri }),
-      ...(writtenBytes === undefined ? {} : { writtenBytes }),
-      vectorStatus: string(written.vector_status) ?? 'unknown',
+      writtenBytes,
+      vectorStatus: 'complete',
     }
   }
 
   async forget(body: MemorySpace, id: string, signal?: AbortSignal): Promise<JsonValue> {
-    const connection = this.connection(body)
+    const root = await this.memoryRoot(body, signal)
     const uri = id.trim()
-    const root = connection.targetUri.replace(/\/+$/u, '')
-    const filename = uri.slice(uri.lastIndexOf('/') + 1)
-    if (!uri.startsWith(`${root}/`) || !uri.endsWith('.md') || filename.startsWith('.')) {
+    if (!isMemoryFile(uri, root)) {
       throw new Error('OpenViking forget requires an exact non-generated .md memory URI inside this Memory Space')
     }
     const query = new URLSearchParams({ uri, recursive: 'false' })
     const result = object(await this.request(body, `/api/v1/fs?${query}`, { method: 'DELETE' }, { signal })) ?? {}
+    if (result.uri !== uri) throw new Error('OpenViking did not confirm deletion of the requested memory URI')
     return {
       action: 'deleted',
       provider: this.id,
-      uri: string(result.uri) ?? uri,
+      id: uri,
+      uri,
       ...(number(result.estimated_deleted_count) === undefined ? {} : { estimatedDeletedCount: number(result.estimated_deleted_count)! }),
     }
   }
@@ -243,6 +258,26 @@ export class OpenVikingProvider implements MemoryProviderAdapter {
     if ((body.provider.typeId ?? body.provider.id) !== this.id) throw new Error(`OpenViking cannot serve provider ${body.provider.id}`)
     const connection = this.memorySpaces.providerConnection(body.id, body.provider.id)
     return { endpoint: String(connection.endpoint ?? ''), targetUri: String(connection.targetUri ?? ''), apiKey: String(connection.apiKey ?? ''), account: String(connection.account ?? ''), user: String(connection.user ?? ''), actorPeerId: String(connection.actorPeerId ?? '') }
+  }
+
+  private async memoryRoot(body: MemorySpace, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
+    const connection = this.connection(body)
+    const root = connection.targetUri.replace(/\/+$/u, '')
+    const match = /^viking:\/\/user(?:\/([^/]+))?\/memories$/u.exec(root)
+    if (match === null || (match[1] !== undefined && !safeUser(match[1]))) throw new Error('OpenViking memory URI must be a safe viking://user/<user>/memories root')
+    if (match[1] !== undefined) return root
+    // Retain old persisted shorthand without sending the ambiguous URI to
+    // newer servers. With no configured user, ask the authenticated backend.
+    const user = connection.user?.trim() || string(object(await this.request(body, '/api/v1/system/status', {}, { signal }))?.user) || ''
+    if (!safeUser(user)) throw new Error('OpenViking could not resolve the memory owner; configure an explicit user memory URI')
+    return `viking://user/${user}/memories`
+  }
+
+  private async readContent(body: MemorySpace, uri: string, signal?: AbortSignal): Promise<string> {
+    const result = await this.request(body, `/api/v1/content/read?${new URLSearchParams({ uri })}`, {}, { signal })
+    if (typeof result !== 'string') throw new Error('OpenViking content read did not return text')
+    return result
   }
 
   private async request(body: MemorySpace, path: string, init: RequestInit = {}, options: OpenVikingRequestOptions = {}): Promise<unknown> {
