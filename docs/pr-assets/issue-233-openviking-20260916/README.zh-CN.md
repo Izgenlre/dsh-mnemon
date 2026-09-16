@@ -24,10 +24,10 @@ receipt.action: stored
 
 ```sh
 node scripts/fixtures/openviking-protocol.mjs
-pnpm e2e:serve --openviking-write
+MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --openviking-write --strategy-extensions
 ```
 
-将 OpenViking 配为 `http://127.0.0.1:19335`，account/user 均为 `default`，不填 API key，在 Mnemon E2E 会话发送 `openviking-write-233`。基线 checkout 只复制 fixture 代码。模型选择唯一启用的默认 OpenViking 命名空间，经实际委派写入 Agent 执行一次。fixture 刻意返回一次外观性抽取更新但不保存候选正文；这是受控协议复现，不代表实测了在线 LLM 抽取质量。
+浏览器运行使用官方 Native CLI 0.2.8，同时启用 Scoped、Light context 和 Active capture。将 OpenViking 配为 `http://127.0.0.1:19335`，account/user 均为 `default`，不填 API key，在 Mnemon E2E 会话发送 `openviking-write-233`。基线 checkout 只复制 fixture 代码。模型选择唯一启用的默认 OpenViking 命名空间，经实际委派写入 Agent 执行一次。fixture 刻意返回一次外观性抽取更新但不保存候选正文；这是受控协议复现，不代表实测了在线 LLM 抽取质量。
 
 | 同一运行中的 HTTP fixture | 基线 | 修复后 |
 |---|---:|---:|

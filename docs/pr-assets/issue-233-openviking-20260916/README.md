@@ -24,10 +24,10 @@ For the browser comparison, start the [protocol fixture](../../../scripts/fixtur
 
 ```sh
 node scripts/fixtures/openviking-protocol.mjs
-pnpm e2e:serve --openviking-write
+MNEMON_CLI_PATH=/absolute/path/to/mnemon pnpm e2e:serve --openviking-write --strategy-extensions
 ```
 
-Configure OpenViking at `http://127.0.0.1:19335`, account/user `default`, no API key, and send `openviking-write-233` in Mnemon E2E. Only fixture code is copied into the baseline checkout. The model selects the unique enabled default OpenViking namespace and drives its real delegated writer once. The fixture deliberately returns a cosmetic extraction update without storing the candidate; this is controlled protocol evidence, not a claim about live LLM extraction.
+The browser runs use official Native CLI 0.2.8 and enable Scoped, Light context and Active capture together. Configure OpenViking at `http://127.0.0.1:19335`, account/user `default`, no API key, and send `openviking-write-233` in Mnemon E2E. Only fixture code is copied into the baseline checkout. The model selects the unique enabled default OpenViking namespace and drives its real delegated writer once. The fixture deliberately returns a cosmetic extraction update without storing the candidate; this is controlled protocol evidence, not a claim about live LLM extraction.
 
 | Same running HTTP fixture | Baseline | Fixed |
 |---|---:|---:|
